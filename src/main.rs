@@ -1,12 +1,15 @@
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use grammers_client::peer::{Channel, Dialog, Group, User};
-use grammers_tl_types::types::ChannelAdminLogEventActionChangeEmojiStickerSet;
+use tokio::fs;
 
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{env, io};
 
 use grammers_client::media::{Downloadable, Media};
@@ -16,7 +19,7 @@ use grammers_session::storages::SqliteSession;
 use mime::Mime;
 use mime_guess::mime;
 use simple_logger::SimpleLogger;
-use tokio::runtime;
+use tokio::sync::Semaphore;
 
 pub struct App {
     client: Client,
@@ -44,21 +47,18 @@ enum Commands {
     /// List all available Telegram peers/chats
     List {
         #[arg(short, long, value_enum)]
-        filter: Option<PeerType>,
-
-        #[arg(short, long, value_enum)]
-        name: Option<String>,
+        filter: PeerType,
     },
 
     /// Download all media from a specific peer
     Download {
         /// The name or ID of the chat/peer
         #[arg(short, long)]
-        peer: String,
+        name: String,
 
-        /// Optional: specific media type (e.g., photo, video, document)
-        #[arg(short, long, default_value = "all")]
-        kind: String,
+        ///Destination Path
+        #[arg(short, long)]
+        path: PathBuf,
     },
 }
 
@@ -104,61 +104,57 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::List { filter, name } => {
+        Commands::List { filter } => {
             let mut dialog_iter = client.iter_dialogs();
 
-            if let Some(search_name) = name {
-                let mut search_dialog = None;
-
-                while let Some(dialog) = dialog_iter.next().await? {
-                    if dialog.peer().name().is_some_and(|name| name == search_name) {
-                        search_dialog = Some(dialog);
-                    }
-                }
-
-                if search_dialog.is_some() {
-                    display_downloads(&client, search_dialog.unwrap()).await;
-                }
-            } else {
-                println!("Fetching your Telegram chats...");
-                while let Some(dialog) = dialog_iter.next().await? {
-                    display_dialog(dialog, *filter);
-                }
+            while let Some(dialog) = dialog_iter.next().await? {
+                display_dialog(dialog, *filter);
             }
         }
-        Commands::Download { peer, kind } => {
-            println!("Initializing download for peer: '{}'", peer);
-            println!("Targeting media type: {}", kind);
+        Commands::Download { name, path } => {
+            println!("Initializing download for peer: '{}'", name);
 
-            // TODO: Implement download logic
-            download_media(peer).await;
+            let mut dialog_iter = client.iter_dialogs();
+
+            let mut search_dialog = None;
+
+            while let Some(dialog) = dialog_iter.next().await? {
+                if dialog
+                    .peer()
+                    .name()
+                    .is_some_and(|search_name| search_name == name)
+                {
+                    search_dialog = Some(dialog);
+                }
+            }
+
+            if search_dialog.is_some() {
+                download_media(&client, search_dialog.unwrap(), path.to_path_buf()).await?;
+            } else {
+                println!("Could not find peer!");
+            }
         }
     }
 
     Ok(())
 }
 
-async fn download_media(peer: &str) {
-    // Placeholder for TDLib / Media logic
-    println!("Successfully downloaded media from {}!", peer);
-}
-
-fn display_dialog(dialog: Dialog, filter: Option<PeerType>) {
+fn display_dialog(dialog: Dialog, filter: PeerType) {
     use grammers_client::peer::Peer::*;
     let peer = dialog.peer();
     match peer {
         User(user) => {
-            if filter.is_some_and(|peer| peer == PeerType::Chat) {
+            if filter == PeerType::Chat {
                 display_user(user);
             }
         }
         Channel(channel) => {
-            if filter.is_some_and(|peer| peer == PeerType::Channel) {
+            if filter == PeerType::Channel {
                 display_channel(channel);
             }
         }
         Group(group) => {
-            if filter.is_some_and(|peer| peer == PeerType::Group) {
+            if filter == PeerType::Group {
                 display_group(group);
             }
         }
@@ -179,7 +175,8 @@ fn display_group(group: &Group) {
     );
 }
 
-async fn display_downloads(client: &Client, dialog: Dialog) -> Result<()> {
+async fn download_media(client: &Client, dialog: Dialog, dst_path: PathBuf) -> Result<()> {
+    let semaphore = Arc::new(Semaphore::new(5));
     let mut messages = client.iter_messages(dialog.peer_ref());
 
     println!(
@@ -189,24 +186,51 @@ async fn display_downloads(client: &Client, dialog: Dialog) -> Result<()> {
     );
 
     while let Some(message) = messages.next().await? {
-        if let Some(media) = message.media() {
-            match media {
-                Media::Document(doc) => {
-                    // This is the file name before downloading
-                    let name = doc.name().unwrap_or("unnamed_file");
-                    let size = doc.size(); // You can also see the size in bytes!
-                    println!("Found Document: {} ({:?} bytes)", name, size);
-                }
-                Media::Photo(_) => {
-                    println!("Found Photo: photo_{}.jpg", message.id());
-                }
-                _ => println!("Found other media type"),
-            }
-            // Determine the folder name
-            // If it's a topic message, use the topic name; otherwise "General"
-        }
-    }
+        let client = client.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let dst_path = dst_path.clone();
+        tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
 
+            if let Some(media) = message.media() {
+                let folder_path = PathBuf::from_str(
+                    message
+                        .reply_to_message_id()
+                        .unwrap_or(50000)
+                        .to_string()
+                        .as_str(),
+                )
+                .unwrap();
+
+                let folder_path = dst_path.join(folder_path);
+
+                fs::create_dir_all(&folder_path).await.unwrap();
+
+                match &media {
+                    Media::Document(doc) => {
+                        // This is the file name before downloading
+                        let name = doc.name().unwrap_or("unnamed_file");
+                        let size = doc.size(); // You can also see the size in bytes!
+                        let path = folder_path.join(name);
+                        println!(
+                            "Found Document: {} ({:?} bytes) | Message ID reply {:?}",
+                            name,
+                            size,
+                            message.reply_to_message_id()
+                        );
+                        println!("Downloading to : {:?}", path);
+                        client.download_media(&media, path).await.unwrap();
+                    }
+                    Media::Photo(_) => {
+                        println!("Found Photo: photo_{}.jpg", message.id());
+                    }
+                    _ => println!("Found other media type"),
+                }
+                // Determine the folder name
+                // If it's a topic message, use the topic name; otherwise "General"
+            }
+        });
+    }
     Ok(())
 }
 
