@@ -1,29 +1,26 @@
-use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
+use grammers_client::message::Message;
+use grammers_session::types::PeerRef;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
+use tokio::task::JoinSet;
+
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use grammers_client::peer::{Channel, Dialog, Group, User};
-use tokio::fs;
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::{env, io};
 
-use grammers_client::media::{Downloadable, Media};
+use grammers_client::media::Media;
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
-use mime::Mime;
-use mime_guess::mime;
 use simple_logger::SimpleLogger;
 use tokio::sync::Semaphore;
-
-pub struct App {
-    client: Client,
-}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -59,6 +56,9 @@ enum Commands {
         ///Destination Path
         #[arg(short, long)]
         path: PathBuf,
+
+        #[arg(short, long)]
+        limit: u64,
     },
 }
 
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
                 display_dialog(dialog, *filter);
             }
         }
-        Commands::Download { name, path } => {
+        Commands::Download { name, path, limit } => {
             println!("Initializing download for peer: '{}'", name);
 
             let mut dialog_iter = client.iter_dialogs();
@@ -129,7 +129,12 @@ async fn main() -> Result<()> {
             }
 
             if search_dialog.is_some() {
-                download_media(&client, search_dialog.unwrap(), path.to_path_buf()).await?;
+                download_media(
+                    &client,
+                    search_dialog.unwrap().peer_ref(),
+                    path.to_path_buf(),
+                )
+                .await?;
             } else {
                 println!("Could not find peer!");
             }
@@ -175,62 +180,204 @@ fn display_group(group: &Group) {
     );
 }
 
-async fn download_media(client: &Client, dialog: Dialog, dst_path: PathBuf) -> Result<()> {
-    let semaphore = Arc::new(Semaphore::new(5));
-    let mut messages = client.iter_messages(dialog.peer_ref());
+struct Downloader {
+    client: Client,
+    peer: PeerRef,
+    dst_root: PathBuf,
+    semaphore: Arc<Semaphore>,
+    tasks: Option<JoinSet<Result<()>>>,
+}
 
-    println!(
-        "Peer {:?} has {} total messages.",
-        dialog.peer().name(),
-        messages.total().await.unwrap()
-    );
+impl Downloader {
+    pub fn new(client: Client, peer: PeerRef, dst_root: PathBuf, limit: usize) -> Self {
+        let semaphore = Arc::new(Semaphore::new(limit));
+        Self {
+            client,
+            peer,
+            dst_root,
+            semaphore,
+            tasks: None,
+        }
+    }
 
-    while let Some(message) = messages.next().await? {
-        let client = client.clone();
-        let semaphore = Arc::clone(&semaphore);
-        let dst_path = dst_path.clone();
-        tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
+    pub async fn run(&mut self) -> Result<()> {
+        self.tasks = Some(JoinSet::new());
+        let mut messages_iter = self.client.iter_messages(self.peer);
+
+        let multi_bar = Arc::new(MultiProgress::new());
+        while let Some(message) = messages_iter.next().await? {
+            if self.semaphore.available_permits() <= 0 {
+                self.tasks.take().unwrap().join_all().await;
+                self.tasks = Some(JoinSet::new());
+            }
 
             if let Some(media) = message.media() {
-                let folder_path = PathBuf::from_str(
-                    message
-                        .reply_to_message_id()
-                        .unwrap_or(50000)
-                        .to_string()
-                        .as_str(),
-                )
-                .unwrap();
+                let _permit = self.semaphore.acquire().await;
+                let dst_root = self.dst_root.clone();
+                let client = self.client.clone();
 
-                let folder_path = dst_path.join(folder_path);
-
-                fs::create_dir_all(&folder_path).await.unwrap();
-
-                match &media {
-                    Media::Document(doc) => {
-                        // This is the file name before downloading
-                        let name = doc.name().unwrap_or("unnamed_file");
-                        let size = doc.size(); // You can also see the size in bytes!
-                        let path = folder_path.join(name);
-                        println!(
-                            "Found Document: {} ({:?} bytes) | Message ID reply {:?}",
-                            name,
-                            size,
-                            message.reply_to_message_id()
-                        );
-                        println!("Downloading to : {:?}", path);
-                        client.download_media(&media, path).await.unwrap();
-                    }
-                    Media::Photo(_) => {
-                        println!("Found Photo: photo_{}.jpg", message.id());
-                    }
-                    _ => println!("Found other media type"),
-                }
-                // Determine the folder name
-                // If it's a topic message, use the topic name; otherwise "General"
+                self.tasks.as_mut().unwrap().spawn(Self::download_media(
+                    client,
+                    message,
+                    Arc::clone(&multi_bar),
+                    media,
+                    dst_root,
+                ));
             }
-        });
+        }
+        Ok(())
     }
+
+    async fn download_media(
+        client: Client,
+        message: Message,
+        multi_bar: Arc<MultiProgress>,
+        media: Media,
+        dst_root: PathBuf,
+    ) -> Result<()> {
+        let mb = Arc::clone(&multi_bar);
+
+        let style = ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
+        )?
+        .progress_chars("#>-");
+        let (file_name, total_size) = match &media {
+            Media::Document(d) => (
+                d.name().unwrap_or("file").to_string(),
+                d.size().unwrap_or(100) as u64,
+            ),
+            Media::Photo(p) => (
+                format!("photo_{}.jpg", message.id()),
+                p.size().unwrap_or(100) as u64,
+            ),
+            _ => return Ok(()),
+        };
+        let folder_name = message.reply_to_message_id().unwrap_or(10000).to_string();
+        let folder = dst_root.join(folder_name);
+
+        tokio::fs::create_dir_all(&folder).await?;
+
+        let path = folder.join(&file_name);
+
+        // --- 1. The Duplicate/Integrity Check ---
+        if path.exists() {
+            let meta = tokio::fs::metadata(&path).await?;
+            if meta.len() == total_size {
+                // Use println via MultiProgress to avoid flickering
+                mb.println(format!("✔ Skipping {}: Already exists", file_name))?;
+                return Ok(());
+            }
+        }
+
+        // --- 2. Setup Progress Bar ---
+        let pb = mb.add(ProgressBar::new(total_size));
+        pb.set_style(style);
+        pb.set_message(file_name.clone());
+
+        // --- 3. Streamed Download ---
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await?;
+
+        let mut stream = client.iter_download(&media);
+
+        while let Some(chunk) = stream.next().await? {
+            file.write_all(&chunk).await?;
+            file.flush().await?;
+            pb.inc(chunk.len() as u64);
+        }
+
+        pb.finish_with_message(format!("✔ {}", file_name));
+        Ok(())
+    }
+}
+
+async fn download_media(client: &Client, peer: PeerRef, dst_root: PathBuf) -> Result<()> {
+    let semaphore = Arc::new(Semaphore::new(8));
+    let multi_bar = Arc::new(MultiProgress::new());
+    let mut messages = client.iter_messages(peer);
+    let mut tasks = JoinSet::new();
+
+    let style = ProgressStyle::with_template(
+        "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
+    )?
+    .progress_chars("#>-");
+
+    while let Some(message) = messages.next().await? {
+        if let Some(media) = message.media() {
+            let client = client.clone();
+            let semaphore = Arc::clone(&semaphore);
+            let mb = Arc::clone(&multi_bar);
+            let dst_root = dst_root.clone();
+            let style = style.clone();
+
+            tasks.spawn(async move {
+                let _permit = semaphore.acquire().await.map_err(|e| anyhow::anyhow!(e))?;
+
+                let (file_name, total_size) = match &media {
+                    Media::Document(d) => (
+                        d.name().unwrap_or("file").to_string(),
+                        d.size().unwrap_or(100) as u64,
+                    ),
+                    Media::Photo(p) => (
+                        format!("photo_{}.jpg", message.id()),
+                        p.size().unwrap_or(100) as u64,
+                    ),
+                    _ => return Ok(()),
+                };
+                let folder_name = message.reply_to_message_id().unwrap_or(10000).to_string();
+                let folder = dst_root.join(folder_name);
+
+                tokio::fs::create_dir_all(&folder).await?;
+
+                let path = folder.join(&file_name);
+
+                // --- 1. The Duplicate/Integrity Check ---
+                if path.exists() {
+                    let meta = tokio::fs::metadata(&path).await?;
+                    if meta.len() == total_size {
+                        // Use println via MultiProgress to avoid flickering
+                        mb.println(format!("✔ Skipping {}: Already exists", file_name))?;
+                        return Ok(());
+                    }
+                }
+
+                // --- 2. Setup Progress Bar ---
+                let pb = mb.add(ProgressBar::new(total_size));
+                pb.set_style(style);
+                pb.set_message(file_name.clone());
+
+                // --- 3. Streamed Download ---
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&path)
+                    .await?;
+
+                let mut stream = client.iter_download(&media);
+
+                while let Some(chunk) = stream.next().await? {
+                    file.write_all(&chunk).await?;
+                    file.flush().await?;
+                    pb.inc(chunk.len() as u64);
+                }
+
+                pb.finish_with_message(format!("✔ {}", file_name));
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+    }
+
+    while let Some(res) = tasks.join_next().await {
+        if let Err(e) = res? {
+            multi_bar.println(format!("✘ Error: {}", e))?;
+        }
+    }
+
     Ok(())
 }
 
