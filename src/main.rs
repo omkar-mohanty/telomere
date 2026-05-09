@@ -5,7 +5,9 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -20,7 +22,7 @@ use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use simple_logger::SimpleLogger;
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -210,6 +212,8 @@ impl Downloader {
         )?
         .progress_chars("#>-");
 
+        let seen_files = Arc::new(RwLock::new(HashSet::new()));
+
         let multi_bar = Arc::new(MultiProgress::new());
         while let Some(message) = messages_iter.next().await? {
             if let Some(media) = message.media() {
@@ -217,12 +221,16 @@ impl Downloader {
                 let client = self.client.clone();
                 let permit = self.semaphore.clone().acquire_owned().await?;
                 let style = style.clone();
+                let seen_files = seen_files.clone();
 
                 let mb = multi_bar.clone();
 
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
                 self.tasks.spawn(async move {
                     let _permit = permit;
-                    Self::download_media(client, message, mb, media, dst_root, style).await?;
+                    Self::download_media(client, message, mb, media, dst_root, style, seen_files)
+                        .await?;
                     Ok::<(), anyhow::Error>(())
                 });
             }
@@ -245,6 +253,7 @@ impl Downloader {
         media: Media,
         dst_root: PathBuf,
         style: ProgressStyle,
+        seen_files: Arc<RwLock<HashSet<String>>>,
     ) -> Result<()> {
         let mb = Arc::clone(&multi_bar);
 
@@ -259,6 +268,15 @@ impl Downloader {
             ),
             _ => return Ok(()),
         };
+
+        {
+            let mut set_read = seen_files.write().await;
+
+            if !set_read.insert(file_name.clone()) {
+                return Ok(());
+            }
+        }
+
         let folder_name = message.reply_to_message_id().unwrap_or(10000).to_string();
         let folder = dst_root.join(folder_name);
 
