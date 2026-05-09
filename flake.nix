@@ -16,6 +16,10 @@
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = with pkgs; [ clang llvmPackages.bintools rustup cargo ];
 
+          TG_ID = "EXPUNGED_SECRET";
+          TG_HASH = "EXPUNGED_SECRET";
+          TG_BOT_TOKEN = "EXPUNGED_SECRET";
+          
         };
       });
 }
