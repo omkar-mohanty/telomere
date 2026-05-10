@@ -1,28 +1,26 @@
-use grammers_client::message::Message;
-use grammers_session::types::PeerRef;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
-use tokio::task::JoinSet;
-
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
-
 use anyhow::Result;
+
 use clap::{Parser, Subcommand, ValueEnum};
-use grammers_client::peer::{Channel, Dialog, Group, User};
-
-use std::io::{BufRead, Write};
-use std::path::PathBuf;
-use std::{env, io};
-
+use env_logger::{Builder, Target};
 use grammers_client::media::Media;
+use grammers_client::message::Message;
+use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
-use simple_logger::SimpleLogger;
+use grammers_session::types::PeerRef;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use log::LevelFilter;
+use std::collections::HashSet;
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{env, io};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, Semaphore};
+use tokio::task::JoinSet;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -66,10 +64,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    SimpleLogger::new()
-        .with_level(log::LevelFilter::Info)
-        .init()
-        .unwrap();
+    let target = Box::new(std::fs::File::create("app.log").expect("Could not create file"));
+
+    Builder::new()
+        .filter_level(LevelFilter::Info)
+        .target(Target::Pipe(target))
+        .init();
 
     let api_id = env!("TG_ID").parse().expect("TG_ID invalid");
 
