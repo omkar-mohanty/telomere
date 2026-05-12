@@ -225,8 +225,6 @@ impl Downloader {
 
                 let mb = multi_bar.clone();
 
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
                 self.tasks.spawn(async move {
                     let _permit = permit;
                     Self::download_media(client, message, mb, media, dst_root, style, seen_files)
