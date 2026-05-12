@@ -37,12 +37,14 @@ impl DownlaoderBuilder {
         }
     }
 
-    pub fn set_limit(&mut self, limit: usize) {
+    pub fn set_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
+        self
     }
 
-    pub fn set_dst(&mut self, path: PathBuf) {
+    pub fn set_dst(mut self, path: PathBuf) -> Self {
         self.dst_root = Some(path);
+        self
     }
 
     pub fn build(self) -> Result<Downloader> {
@@ -77,8 +79,22 @@ impl Downloader {
 
         let seen_files = Arc::new(RwLock::new(HashSet::new()));
 
+        // Download everything
+        if self.forum_topics.is_empty() {}
+
         let multi_bar = Arc::new(MultiProgress::new());
         while let Some(message) = messages_iter.next().await? {
+            let msg_hdr = message.reply_header();
+
+            if let Some(grammers_tl_types::enums::MessageReplyHeader::Header(hdr)) = msg_hdr {
+                let thread_root_id = hdr
+                    .reply_to_top_id
+                    .or(hdr.reply_to_msg_id)
+                    .expect("forum topic but no message id");
+
+                if self.forum_topics.contains_key(&thread_root_id) {}
+            }
+
             if let Some(media) = message.media() {
                 let dst_root = self.dst_root.clone();
                 let client = self.client.clone();
@@ -99,6 +115,31 @@ impl Downloader {
             if let Some(res) = self.tasks.try_join_next() {
                 res??;
             }
+        }
+
+        while let Some(res) = self.tasks.join_next().await {
+            res??;
+        }
+        Ok(())
+    }
+
+    async fn initiate_download(&self, message: Message, media: Media) -> Result<()> {
+        let dst_root = self.dst_root.clone();
+        let client = self.client.clone();
+        let permit = self.semaphore.clone().acquire_owned().await?;
+        let style = style.clone();
+        let seen_files = seen_files.clone();
+
+        let mb = multi_bar.clone();
+
+        self.tasks.spawn(async move {
+            let _permit = permit;
+            Self::download_media(client, message, mb, media, dst_root, style, seen_files).await?;
+            Ok::<(), anyhow::Error>(())
+        });
+
+        if let Some(res) = self.tasks.try_join_next() {
+            res??;
         }
 
         while let Some(res) = self.tasks.join_next().await {
