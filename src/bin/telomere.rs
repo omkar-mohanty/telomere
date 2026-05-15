@@ -1,25 +1,21 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use env_logger::{Builder, Target};
-use grammers_client::media::Media;
-use grammers_client::message::Message;
 use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use grammers_tl_types::enums::ForumTopic;
+use grammers_tl_types::enums::messages::ForumTopics;
+use grammers_tl_types::functions::messages::GetForumTopics;
 use log::LevelFilter;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io};
-use telomere::downloader::{DownlaoderBuilder, Downloader};
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{RwLock, Semaphore};
-use tokio::task::JoinSet;
+use telomere::downloader::DownlaoderBuilder;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -42,8 +38,14 @@ struct Cli {
 enum Commands {
     /// List all available Telegram peers/chats
     List {
+        ///Filter by type e.g Groups, Channels, User
         #[arg(short, long, value_enum)]
         filter: PeerType,
+    },
+
+    Forum {
+        ///Name of the peer
+        name: String,
     },
 
     /// Download all media from a specific peer
@@ -56,9 +58,39 @@ enum Commands {
         #[arg(short, long)]
         path: PathBuf,
 
+        ///Number of downloads to do simultaneously. Recommened never to go above 2
         #[arg(short, long)]
         limit: usize,
+
+        ///Forum topic i.e Group or Channel to download from if applicable
+        #[arg(short, long)]
+        forum: Option<Vec<String>>,
     },
+}
+
+async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<HashMap<i32, ForumTopic>> {
+    let mut filtered_topics = HashMap::new();
+
+    let forum_topic_res = client
+        .invoke(&GetForumTopics {
+            peer: peer.into(),
+            q: None,
+            offset_date: 0,
+            offset_id: 0,
+            offset_topic: 0,
+            limit: 0,
+        })
+        .await?;
+    let topics = {
+        let ForumTopics::Topics(topics) = forum_topic_res;
+        topics.topics
+    };
+
+    for topic in topics {
+        filtered_topics.insert(topic.id(), topic);
+    }
+
+    Ok(filtered_topics)
 }
 
 #[tokio::main]
@@ -112,7 +144,36 @@ async fn main() -> Result<()> {
                 display_dialog(dialog, filter);
             }
         }
-        Commands::Download { name, path, limit } => {
+        Commands::Forum { name } => {
+            let mut dialog_iter = client.iter_dialogs();
+
+            let mut search_dialog = None;
+
+            while let Some(dialog) = dialog_iter.next().await? {
+                if dialog
+                    .peer()
+                    .name()
+                    .is_some_and(|search_name| search_name == name)
+                {
+                    search_dialog = Some(dialog);
+                }
+            }
+
+            let peer_ref = search_dialog.unwrap().peer_ref();
+            let forum_topics = get_forum_topics(&client, &peer_ref).await?;
+
+            for (id, topic) in forum_topics {
+                if let ForumTopic::Topic(topic) = topic {
+                    println!("Title : {}\tID : {}", topic.title, id);
+                }
+            }
+        }
+        Commands::Download {
+            name,
+            path,
+            limit,
+            forum,
+        } => {
             println!("Initializing download for peer: '{}'", name);
 
             let mut dialog_iter = client.iter_dialogs();
@@ -130,9 +191,24 @@ async fn main() -> Result<()> {
             }
 
             if search_dialog.is_some() {
-                DownlaoderBuilder::new(client, search_dialog.unwrap().peer_ref())
+                let peer_ref = search_dialog.unwrap().peer_ref();
+                let forum_topics = get_forum_topics(&client, &peer_ref).await?;
+                let mut filtered_forum_topics = HashMap::new();
+
+                for (id, value) in forum_topics {
+                    if let ForumTopic::Topic(topic) = &value {
+                        if let Some(forum_topic) = &forum {
+                            if forum_topic.contains(&topic.title) {
+                                filtered_forum_topics.insert(id, value);
+                            }
+                        }
+                    }
+                }
+                log::debug!("Forum Topics {:?}", filtered_forum_topics);
+                DownlaoderBuilder::new(client, peer_ref)
                     .set_limit(limit)
                     .set_dst(path)
+                    .set_forum_topics(filtered_forum_topics)
                     .build()?
                     .run()
                     .await?;

@@ -1,17 +1,13 @@
 use anyhow::Result;
 
+use grammers_client::Client;
 use grammers_client::media::Media;
 use grammers_client::message::Message;
-use grammers_client::peer::{Channel, Dialog, Group, User};
-use grammers_client::{Client, SignInError};
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
-use grammers_tl_types::enums::messages::ForumTopics;
-use grammers_tl_types::functions::messages::GetForumTopics;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
@@ -47,6 +43,11 @@ impl DownlaoderBuilder {
         self
     }
 
+    pub fn set_forum_topics(mut self, forum_topics: HashMap<i32, ForumTopic>) -> Self {
+        self.forum_topics = Some(forum_topics);
+        self
+    }
+
     pub fn build(self) -> Result<Downloader> {
         Ok(Downloader {
             client: self.client,
@@ -72,17 +73,6 @@ impl Downloader {
     pub async fn run(mut self) -> Result<()> {
         let mut messages_iter = self.client.iter_messages(self.peer);
 
-        let style = ProgressStyle::with_template(
-            "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
-        )?
-        .progress_chars("#>-");
-
-        let seen_files = Arc::new(RwLock::new(HashSet::new()));
-
-        // Download everything
-        if self.forum_topics.is_empty() {}
-
-        let multi_bar = Arc::new(MultiProgress::new());
         while let Some(message) = messages_iter.next().await? {
             let msg_hdr = message.reply_header();
 
@@ -92,42 +82,32 @@ impl Downloader {
                     .or(hdr.reply_to_msg_id)
                     .expect("forum topic but no message id");
 
-                if self.forum_topics.contains_key(&thread_root_id) {}
-            }
-
-            if let Some(media) = message.media() {
-                let dst_root = self.dst_root.clone();
-                let client = self.client.clone();
-                let permit = self.semaphore.clone().acquire_owned().await?;
-                let style = style.clone();
-                let seen_files = seen_files.clone();
-
-                let mb = multi_bar.clone();
-
-                self.tasks.spawn(async move {
-                    let _permit = permit;
-                    Self::download_media(client, message, mb, media, dst_root, style, seen_files)
-                        .await?;
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
-
-            if let Some(res) = self.tasks.try_join_next() {
-                res??;
+                if let Some(media) = message.media() {
+                    if !self.forum_topics.is_empty() {
+                        if self.forum_topics.contains_key(&thread_root_id) {
+                            self.initiate_download(message, media).await?;
+                        }
+                    } else {
+                        self.initiate_download(message, media).await?;
+                    }
+                }
             }
         }
 
-        while let Some(res) = self.tasks.join_next().await {
-            res??;
-        }
         Ok(())
     }
 
-    async fn initiate_download(&self, message: Message, media: Media) -> Result<()> {
+    async fn initiate_download(&mut self, message: Message, media: Media) -> Result<()> {
         let dst_root = self.dst_root.clone();
         let client = self.client.clone();
         let permit = self.semaphore.clone().acquire_owned().await?;
-        let style = style.clone();
+
+        let seen_files = Arc::new(RwLock::new(HashSet::new()));
+        let multi_bar = Arc::new(MultiProgress::new());
+        let style = ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
+        )?
+        .progress_chars("#>-");
         let seen_files = seen_files.clone();
 
         let mb = multi_bar.clone();
