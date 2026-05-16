@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use env_logger::{Builder, Target};
 use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
@@ -15,6 +14,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io};
+use systemd_journal_logger::JournalLog;
 use telomere_core::downloader::DownlaoderBuilder;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -95,12 +95,15 @@ async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<HashMap<i32
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let target = Box::new(std::fs::File::create("app.log").expect("Could not create file"));
+    // Initialize the native systemd journal logger
+    JournalLog::new()?
+        .with_extra_fields(vec![("VERSION", env!("CARGO_PKG_VERSION"))])
+        .with_syslog_identifier("telomere".to_string())
+        .install()?;
 
-    Builder::new()
-        .filter_level(LevelFilter::Info)
-        .target(Target::Pipe(target))
-        .init();
+    log::set_max_level(LevelFilter::Info);
+
+    log::info!("Telomere media downloader initializing natively inside systemd!");
 
     let api_id_path = env::var("TG_ID_FILE")?
         .parse::<PathBuf>()
