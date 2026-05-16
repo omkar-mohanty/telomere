@@ -105,9 +105,10 @@ async fn main() -> Result<()> {
     let api_id_path = env::var("TG_ID_FILE")?
         .parse::<PathBuf>()
         .expect("TG_ID invalid");
-    let tg_hash_path = env::var("TG_ID_FILE")?
+
+    let tg_hash_path = env::var("TG_HASH_FILE")?
         .parse::<PathBuf>()
-        .expect("TG_ID_FILE invalid");
+        .expect("TG_HASH_FILE invalid");
 
     let api_id_raw = tokio::fs::read_to_string(api_id_path).await?;
     let tg_hash_raw = tokio::fs::read_to_string(tg_hash_path).await?;

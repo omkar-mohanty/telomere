@@ -26,11 +26,8 @@
 
         # For `nix develop`:
         devShell = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [ rustc cargo ];
+          nativeBuildInputs = with pkgs; [rust-analyzer rustc cargo ];
 
-        TG_ID = "EXPUNGED_SECRET";
-          TG_HASH = "EXPUNGED_SECRET";
-          TG_BOT_TOKEN = "EXPUNGED_SECRET";
         };
       }
     );
