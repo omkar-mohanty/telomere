@@ -102,7 +102,18 @@ async fn main() -> Result<()> {
         .target(Target::Pipe(target))
         .init();
 
-    let api_id = env!("TG_ID").parse().expect("TG_ID invalid");
+    let api_id_path = env::var("TG_ID_FILE")?
+        .parse::<PathBuf>()
+        .expect("TG_ID invalid");
+    let tg_hash_path = env::var("TG_ID_FILE")?
+        .parse::<PathBuf>()
+        .expect("TG_ID_FILE invalid");
+
+    let api_id_raw = tokio::fs::read_to_string(api_id_path).await?;
+    let tg_hash_raw = tokio::fs::read_to_string(tg_hash_path).await?;
+
+    let api_id = api_id_raw.trim().parse()?;
+    let tg_hash = tg_hash_raw.trim().parse::<String>()?;
 
     let session = Arc::new(SqliteSession::open(SESSION_FILE).await?);
 
@@ -113,7 +124,7 @@ async fn main() -> Result<()> {
     if !client.is_authorized().await? {
         println!("Signing in...");
         let phone = prompt("Enter your phone number (international format): ")?;
-        let token = client.request_login_code(&phone, env!("TG_HASH")).await?;
+        let token = client.request_login_code(&phone, &tg_hash).await?;
         let code = prompt("Enter the code you received: ")?;
         let signed_in = client.sign_in(&token, &code).await;
         match signed_in {
