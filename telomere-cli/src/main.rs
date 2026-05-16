@@ -8,7 +8,6 @@ use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use grammers_tl_types::enums::messages::ForumTopics;
 use grammers_tl_types::functions::messages::GetForumTopics;
-use indicatif::{ProgressBar, ProgressStyle};
 use log::LevelFilter;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -16,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
-use telomere_core::downloader::{DownlaoderBuilder, DownloadEvent};
+use telomere_core::downloader::DownlaoderBuilder;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -221,56 +220,13 @@ async fn main() -> Result<()> {
                     }
                 }
                 log::debug!("Forum Topics {:?}", filtered_forum_topics);
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-                let style = ProgressStyle::with_template(
-            "{prefix:.bold.blue} [{wide_bar:.green/black}] {percent:>3}% • {bytes_per_sec:>8} • {msg}"
-        ).unwrap()
-        .progress_chars("█▏ ");
-
-                let progress_task = tokio::spawn(async move {
-                    let mp = indicatif::MultiProgress::new();
-                    let mut bars = std::collections::HashMap::new();
-
-                    while let Some(ev) = rx.recv().await {
-                        match ev {
-                            DownloadEvent::Started { file, total_bytes } => {
-                                let pb = mp.add(ProgressBar::new(total_bytes));
-                                pb.set_style(style.clone());
-                                pb.set_message(file.clone());
-                                bars.insert(file, pb);
-                            }
-                            DownloadEvent::Progress { file, chunk_bytes } => {
-                                if let Some(pb) = bars.get(&file) {
-                                    pb.inc(chunk_bytes);
-                                }
-                            }
-                            DownloadEvent::Finished { file } => {
-                                if let Some(pb) = bars.remove(&file) {
-                                    pb.finish_with_message(format!("✔ {}", file));
-                                }
-                            }
-                            DownloadEvent::Skipped { file } => {
-                                mp.println(format!("✔ Skipping {}: Already exists", file))
-                                    .ok();
-                            }
-                            DownloadEvent::Error { file, err } => {
-                                mp.println(format!("✖ {} failed: {}", file, err)).ok();
-                            }
-                        }
-                    }
-                });
-
                 DownlaoderBuilder::new(client, peer_ref)
                     .set_limit(limit)
                     .set_dst(path)
-                    .set_event_sender(tx)
                     .set_forum_topics(filtered_forum_topics)
                     .build()?
                     .run()
                     .await?;
-
-                progress_task.await?;
             } else {
                 println!("Could not find peer!");
             }

@@ -5,24 +5,15 @@ use grammers_client::{Client, InvocationError};
 use grammers_mtsender::RpcError;
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{RwLock, Semaphore, mpsc};
+use tokio::sync::{RwLock, Semaphore};
 use tokio::task::JoinSet;
-
-#[derive(Debug)]
-pub enum DownloadEvent {
-    Started { file: String, total_bytes: u64 },
-    Progress { file: String, chunk_bytes: u64 },
-    Skipped { file: String },
-    Finished { file: String },
-    Error { file: String, err: String },
-}
 
 pub struct DownlaoderBuilder {
     peer: PeerRef,
@@ -30,7 +21,6 @@ pub struct DownlaoderBuilder {
     client: Client,
     dst_root: Option<PathBuf>,
     forum_topics: Option<HashMap<i32, ForumTopic>>,
-    event_sender: Option<mpsc::UnboundedSender<DownloadEvent>>,
 }
 
 impl DownlaoderBuilder {
@@ -41,13 +31,7 @@ impl DownlaoderBuilder {
             client,
             peer,
             forum_topics: None,
-            event_sender: None,
         }
-    }
-
-    pub fn set_event_sender(mut self, tx: mpsc::UnboundedSender<DownloadEvent>) -> Self {
-        self.event_sender = Some(tx);
-        self
     }
 
     pub fn set_limit(mut self, limit: usize) -> Self {
@@ -66,10 +50,6 @@ impl DownlaoderBuilder {
     }
 
     pub fn build(self) -> Result<Downloader> {
-        if self.event_sender.is_none() {
-            anyhow::bail!("Event Sender cannot be None")
-        }
-
         Ok(Downloader {
             client: self.client,
             peer: self.peer,
@@ -77,7 +57,6 @@ impl DownlaoderBuilder {
             semaphore: Arc::new(Semaphore::new(self.limit.unwrap_or(1))),
             tasks: JoinSet::new(),
             forum_topics: self.forum_topics.unwrap_or_default(),
-            event_sender: self.event_sender.unwrap(),
         })
     }
 }
@@ -89,7 +68,6 @@ pub struct Downloader {
     semaphore: Arc<Semaphore>,
     tasks: JoinSet<Result<()>>,
     forum_topics: HashMap<i32, ForumTopic>,
-    event_sender: mpsc::UnboundedSender<DownloadEvent>,
 }
 
 impl Downloader {
@@ -124,15 +102,20 @@ impl Downloader {
         let dst_root = self.dst_root.clone();
         let client = self.client.clone();
         let permit = self.semaphore.clone().acquire_owned().await?;
-        let event_sender = self.event_sender.clone();
 
         let seen_files = Arc::new(RwLock::new(HashSet::new()));
+        let multi_bar = Arc::new(MultiProgress::new());
+        let style = ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
+        )?
+        .progress_chars("#>-");
         let seen_files = seen_files.clone();
+
+        let mb = multi_bar.clone();
 
         self.tasks.spawn(async move {
             let _permit = permit;
-            Self::download_media(client, message, media, dst_root, seen_files, event_sender)
-                .await?;
+            Self::download_media(client, message, mb, media, dst_root, style, seen_files).await?;
             Ok::<(), anyhow::Error>(())
         });
 
@@ -149,11 +132,14 @@ impl Downloader {
     async fn download_media(
         client: Client,
         message: Message,
+        multi_bar: Arc<MultiProgress>,
         media: Media,
         dst_root: PathBuf,
+        style: ProgressStyle,
         seen_files: Arc<RwLock<HashSet<String>>>,
-        event_sender: mpsc::UnboundedSender<DownloadEvent>,
     ) -> Result<()> {
+        let mb = Arc::clone(&multi_bar);
+
         let (file_name, total_size) = match &media {
             Media::Document(d) => (
                 d.name().unwrap_or("file").to_string(),
@@ -181,18 +167,20 @@ impl Downloader {
 
         let path = folder.join(&file_name);
 
-        let path_string = path.to_string_lossy().to_string();
         // --- 1. The Duplicate/Integrity Check ---
         if path.exists() {
             let meta = tokio::fs::metadata(&path).await?;
             if meta.len() == total_size {
                 // Use println via MultiProgress to avoid flickering
-                event_sender
-                    .send(DownloadEvent::Skipped { file: path_string })
-                    .ok();
+                mb.println(format!("✔ Skipping {}: Already exists", file_name))?;
                 return Ok(());
             }
         }
+
+        // --- 2. Setup Progress Bar ---
+        let pb = mb.add(ProgressBar::new(total_size));
+        pb.set_style(style);
+        pb.set_message(file_name.clone());
 
         // --- 3. Streamed Download ---
         let mut file = OpenOptions::new()
@@ -209,12 +197,7 @@ impl Downloader {
                 Ok(Some(chunk)) => {
                     file.write_all(&chunk).await?;
                     file.flush().await?;
-                    event_sender
-                        .send(DownloadEvent::Progress {
-                            file: path_string.clone(),
-                            chunk_bytes: chunk.len() as u64,
-                        })
-                        .ok();
+                    pb.inc(chunk.len() as u64);
                 }
 
                 //End Of Stream
@@ -227,24 +210,13 @@ impl Downloader {
                     code: 420, value, ..
                 })) => {
                     let secs = value.unwrap_or(20);
-                    event_sender
-                        .send(DownloadEvent::Error {
-                            file: path_string.clone(),
-                            err: String::from_str("Flood Wait Error").unwrap(),
-                        })
-                        .ok();
-                    log::info!("Flood Wait Sleeping for {}s", secs);
+                    mb.println(format!("⚠️  Flood wait for {}s, sleeping…", secs))?;
                     tokio::time::sleep(Duration::from_secs(secs as u64)).await;
                 }
 
                 // Bad Request: FILE_REF_EXPIRED
                 Err(InvocationError::Rpc(RpcError { code: 400, .. })) => {
-                    event_sender
-                        .send(DownloadEvent::Error {
-                            file: path_string.clone(),
-                            err: String::from_str("File Reference Expired").unwrap(),
-                        })
-                        .ok();
+                    mb.println("⚠️  File reference expired, retrying download…")?;
                     stream = client.iter_download(&media);
                 }
                 Err(err) => {
@@ -253,6 +225,7 @@ impl Downloader {
             }
         }
 
+        pb.finish_with_message(format!("✔ {}", file_name));
         Ok(())
     }
 }

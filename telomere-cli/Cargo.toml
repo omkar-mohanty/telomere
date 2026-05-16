@@ -9,7 +9,6 @@ grammers-mtsender = "0.9.0"
 grammers-session = "0.9.0"
 grammers-tl-types = "0.9.0"
 log = "0.4.29"
-indicatif = "0.18.4"
 telomere-core = { path = "../telomere-core" }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0.102"
