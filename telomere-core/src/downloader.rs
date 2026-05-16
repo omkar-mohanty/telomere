@@ -1,14 +1,16 @@
 use anyhow::Result;
 
-use grammers_client::Client;
 use grammers_client::media::Media;
 use grammers_client::message::Message;
+use grammers_client::{Client, InvocationError};
+use grammers_mtsender::RpcError;
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, Semaphore};
@@ -191,10 +193,37 @@ impl Downloader {
 
         let mut stream = client.iter_download(&media);
 
-        while let Some(chunk) = stream.next().await? {
-            file.write_all(&chunk).await?;
-            file.flush().await?;
-            pb.inc(chunk.len() as u64);
+        loop {
+            let res = stream.next().await;
+            match res {
+                Ok(Some(chunk)) => {
+                    file.write_all(&chunk).await?;
+                    file.flush().await?;
+                    pb.inc(chunk.len() as u64);
+                }
+                Ok(None) => {
+                    log::info!(
+                        "Download Finished for {}",
+                        path.to_string_lossy().to_string()
+                    );
+                    break;
+                }
+                Err(InvocationError::Rpc(RpcError {
+                    code: 420, value, ..
+                })) => {
+                    log::error!("Flood Wait Error Waiting for {:?}", value);
+                    tokio::time::sleep(Duration::from_secs(value.unwrap_or(10).into())).await;
+                }
+                Err(InvocationError::Rpc(RpcError { code: 400, .. })) => {
+                    log::error!("File Reference Expired for {:?}", path);
+                    log::info!("Retrying Download");
+                    stream = client.iter_download(&media);
+                }
+                Err(err) => {
+                    log::error!("Error While Downloading {:?}", err);
+                    return Err(err.into());
+                }
+            }
         }
 
         pb.finish_with_message(format!("✔ {}", file_name));
