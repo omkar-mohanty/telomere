@@ -1545,7 +1545,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "telomere"
+name = "telomere-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "grammers-client",
+ "grammers-mtsender",
+ "grammers-session",
+ "grammers-tl-types",
+ "log",
+ "telomere-core",
+ "tokio",
+]
+
+[[package]]
+name = "telomere-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1559,10 +1575,6 @@ dependencies = [
  "log",
  "tokio",
 ]
-
-[[package]]
-name = "telomere-cli"
-version = "0.1.0"
 
 [[package]]
 name = "thiserror"

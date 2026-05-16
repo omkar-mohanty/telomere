@@ -4,3 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+grammers-client = "0.9.0"
+grammers-mtsender = "0.9.0"
+grammers-session = "0.9.0"
+grammers-tl-types = "0.9.0"
+log = "0.4.29"
+telomere-core = { path = "../telomere-core" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+env_logger = "0.11.10"
