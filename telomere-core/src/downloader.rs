@@ -1,15 +1,14 @@
 use anyhow::Result;
+
+use grammers_client::Client;
 use grammers_client::media::Media;
 use grammers_client::message::Message;
-use grammers_client::{Client, InvocationError};
-use grammers_mtsender::RpcError;
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, Semaphore};
@@ -192,37 +191,10 @@ impl Downloader {
 
         let mut stream = client.iter_download(&media);
 
-        loop {
-            match stream.next().await {
-                Ok(Some(chunk)) => {
-                    file.write_all(&chunk).await?;
-                    file.flush().await?;
-                    pb.inc(chunk.len() as u64);
-                }
-
-                //End Of Stream
-                Ok(None) => {
-                    break;
-                }
-
-                // Too many requests sleeping for x seconds before sending next request
-                Err(InvocationError::Rpc(RpcError {
-                    code: 420, value, ..
-                })) => {
-                    let secs = value.unwrap_or(20);
-                    mb.println(format!("⚠️  Flood wait for {}s, sleeping…", secs))?;
-                    tokio::time::sleep(Duration::from_secs(secs as u64)).await;
-                }
-
-                // Bad Request: FILE_REF_EXPIRED
-                Err(InvocationError::Rpc(RpcError { code: 400, .. })) => {
-                    mb.println("⚠️  File reference expired, retrying download…")?;
-                    stream = client.iter_download(&media);
-                }
-                Err(err) => {
-                    return Err(err.into());
-                }
-            }
+        while let Some(chunk) = stream.next().await? {
+            file.write_all(&chunk).await?;
+            file.flush().await?;
+            pb.inc(chunk.len() as u64);
         }
 
         pb.finish_with_message(format!("✔ {}", file_name));
