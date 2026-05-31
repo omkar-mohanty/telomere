@@ -29,7 +29,7 @@
 
         # For `nix develop`:
         devShell = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [ rust-bin.beta.latest.default ];
+          nativeBuildInputs = with pkgs; [ rust-bin.beta.latest.default rust-analyzer ];
         };
       }
     );
