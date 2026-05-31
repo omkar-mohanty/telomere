@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use directories::ProjectDirs;
 use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
@@ -119,7 +120,12 @@ async fn main() -> Result<()> {
     let api_id = api_id_raw.trim().parse()?;
     let tg_hash = tg_hash_raw.trim().parse::<String>()?;
 
-    let session = Arc::new(SqliteSession::open(SESSION_FILE).await?);
+    let project_dirs = ProjectDirs::from("org", "ultrainfinite", "telomere-cli")
+        .expect("Project Directores coudld not eb fetched!");
+
+    let config_dir = project_dirs.config_dir();
+
+    let session = Arc::new(SqliteSession::open(config_dir.join(SESSION_FILE)).await?);
 
     let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
     let client = Client::new(handle);
