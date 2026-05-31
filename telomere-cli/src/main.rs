@@ -123,9 +123,13 @@ async fn main() -> Result<()> {
     let project_dirs = ProjectDirs::from("org", "ultrainfinite", "telomere-cli")
         .expect("Project Directores coudld not eb fetched!");
 
-    let config_dir = project_dirs.config_dir();
+    let data_dir = project_dirs.data_dir();
 
-    let session = Arc::new(SqliteSession::open(config_dir.join(SESSION_FILE)).await?);
+    if !data_dir.exists() {
+        tokio::fs::create_dir_all(&data_dir).await?;
+    }
+
+    let session = Arc::new(SqliteSession::open(data_dir.join(SESSION_FILE)).await?);
 
     let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
     let client = Client::new(handle);
