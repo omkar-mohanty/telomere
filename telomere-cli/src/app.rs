@@ -15,26 +15,8 @@ use std::sync::Arc;
 use crate::ui::{Controller, CurrentScreen, Screen};
 
 pub struct StateMachine<S> {
-    ctx: Arc<Context>,
-    state: S,
-}
-
-impl StateMachine<InitState> {
-    pub async fn check_session(self) -> Result<StateWrapper> {
-        if self.ctx.client.is_authorized().await? {
-            Ok(StateWrapper::PeerSelection(StateMachine {
-                ctx: self.ctx,
-                state: PeerSelection { peer_ref: None },
-            }))
-        } else {
-            Ok(StateWrapper::Auth(AuthState::PhoneNumber(StateMachine {
-                ctx: self.ctx,
-                state: AuthPhoneNumber {
-                    phone: String::new(),
-                },
-            })))
-        }
-    }
+    pub ctx: Arc<Context>,
+    pub state: S,
 }
 
 pub enum StateWrapper {
@@ -53,22 +35,6 @@ impl StateWrapper {
             state: InitState,
         })
     }
-
-    pub async fn step(mut self) -> Result<Self> {
-        use StateWrapper::*;
-        match self {
-            Init(state) => state.check_session().await,
-            PeerSelection(state) => {
-                if state.state.peer_ref.is_none() {
-                    Ok(Self::PeerSelection(state))
-                } else {
-                    Ok(Self::ForumTopicSelection)
-                }
-            }
-            Done => Ok(Self::Done),
-            _ => todo!(),
-        }
-    }
 }
 
 pub struct PeerSelection {
@@ -84,15 +50,15 @@ pub struct InitState;
 pub struct DownloadState {}
 
 pub struct AuthPhoneNumber {
-    phone: String,
+    pub phone: String,
 }
 
 pub struct AuthLoginToken {
-    login_token: LoginToken,
+    pub login_token: LoginToken,
 }
 
 pub struct AuthLoginCode {
-    login_code: String,
+    pub login_code: String,
 }
 
 pub struct Application {
@@ -120,16 +86,20 @@ impl Application {
         B::Error: Sync + Send + 'static,
     {
         loop {
-            self.state_wrapper = self.state_wrapper.step().await?;
             use StateWrapper::*;
-            match &self.state_wrapper {
-                PeerSelection(peer) => {}
-                Done => return Ok(true),
-                _ => todo!(),
-            };
             terminal.draw(|f| self.current_screen.draw(f))?;
             let event = event::read()?;
-            self.current_screen.handle_event(&event).await?;
+            if let Some(transition) = self.current_screen.handle_event(&event).await? {
+                let current_state = self.state_wrapper;
+                match (current_state, transition) {
+                    (Auth(AuthState::PhoneNumber(_phone)), Auth(AuthState::LoginCode(_login))) => {
+                        todo!()
+                    }
+                    (_, PeerSelection(peer)) => todo!(),
+                    (PeerSelection(_), ForumTopicSelection) => todo!(),
+                    (_, _) => todo!(),
+                }
+            }
 
             if let Event::Key(key) = event {
                 match key.code {

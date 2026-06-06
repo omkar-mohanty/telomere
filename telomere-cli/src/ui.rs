@@ -1,4 +1,4 @@
-use crate::app::Context;
+use crate::app::{AuthPhoneNumber, AuthState, Context, StateMachine, StateWrapper};
 use anyhow::Result;
 use grammers_client::client::LoginToken;
 use grammers_session::types::PeerRef;
@@ -16,53 +16,54 @@ pub trait Screen {
 }
 
 pub trait Controller {
-    async fn handle_event(&mut self, event: &Event) -> Result<()>;
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>>;
 }
 
 impl Screen for CurrentScreen {
     fn draw(&self, f: &mut Frame) {
         use CurrentScreen::*;
         match self {
-            PeerSelectionState(page) => page.draw(f),
-            AuthState(page) => page.draw(f),
+            PeerSelectionScreen(page) => page.draw(f),
+            AuthScreen(page) => page.draw(f),
         }
     }
 }
 
 impl Controller for CurrentScreen {
-    async fn handle_event(&mut self, event: &Event) -> Result<()> {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         use CurrentScreen::*;
         match self {
-            PeerSelectionState(page) => page.handle_event(&event).await,
-            AuthState(page) => page.handle_event(&event).await,
+            PeerSelectionScreen(page) => page.handle_event(&event).await,
+            AuthScreen(page) => page.handle_event(&event).await,
         }
     }
 }
 
 pub enum CurrentScreen {
-    PeerSelectionState(PeerSelectionState),
-    AuthState(AuthState),
+    PeerSelectionScreen(PeerSelectionScreen),
+    AuthScreen(AuthScreen),
 }
+
 impl CurrentScreen {
     pub async fn new(ctx: Arc<Context>) -> Result<Self> {
         if ctx.client.is_authorized().await? {
-            return Ok(Self::PeerSelectionState(PeerSelectionState::new(ctx)));
+            return Ok(Self::PeerSelectionScreen(PeerSelectionScreen::new(ctx)));
         }
 
-        Ok(Self::AuthState(AuthState::PhoneNumber(
-            PhoneNumberState::new(ctx),
+        Ok(Self::AuthScreen(AuthScreen::PhoneNumber(
+            PhoneNumberScreen::new(ctx),
         )))
     }
 }
 
-pub enum AuthState {
-    PhoneNumber(PhoneNumberState),
-    LoginCode(LoginCodeState),
+pub enum AuthScreen {
+    PhoneNumber(PhoneNumberScreen),
+    LoginCode(LoginScreen),
 }
 
-impl Screen for AuthState {
+impl Screen for AuthScreen {
     fn draw(&self, f: &mut Frame) {
-        use AuthState::*;
+        use AuthScreen::*;
         match self {
             PhoneNumber(page) => page.draw(f),
             LoginCode(page) => page.draw(f),
@@ -70,9 +71,9 @@ impl Screen for AuthState {
     }
 }
 
-impl Controller for AuthState {
-    async fn handle_event(&mut self, event: &Event) -> Result<()> {
-        use AuthState::*;
+impl Controller for AuthScreen {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
+        use AuthScreen::*;
         match self {
             PhoneNumber(page) => page.handle_event(event).await,
             LoginCode(page) => page.handle_event(event).await,
@@ -80,7 +81,7 @@ impl Controller for AuthState {
     }
 }
 
-impl Screen for PeerSelectionState {
+impl Screen for PeerSelectionScreen {
     fn draw(&self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -144,8 +145,8 @@ impl Screen for PeerSelectionState {
     }
 }
 
-impl Controller for PeerSelectionState {
-    async fn handle_event(&mut self, event: &Event) -> Result<()> {
+impl Controller for PeerSelectionScreen {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {}
@@ -153,17 +154,17 @@ impl Controller for PeerSelectionState {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 
-pub struct PeerSelectionState {
+pub struct PeerSelectionScreen {
     pub ctx: Arc<Context>,
     pub selected_peer: usize,
     pub peers: Vec<PeerRef>,
 }
 
-impl PeerSelectionState {
+impl PeerSelectionScreen {
     pub fn new(ctx: Arc<Context>) -> Self {
         Self {
             ctx,
@@ -173,29 +174,37 @@ impl PeerSelectionState {
     }
 }
 
-pub struct LoginCodeState {
+pub struct LoginScreen {
     pub input_phone_number: String,
     login_token: Option<LoginToken>,
-    app: Arc<Context>,
+    ctx: Arc<Context>,
 }
 
-impl LoginCodeState {
-    pub fn new(app: Arc<Context>) -> Self {
+impl LoginScreen {
+    pub fn new(ctx: Arc<Context>) -> Self {
         Self {
             input_phone_number: String::new(),
-            app,
+            ctx,
             login_token: None,
         }
     }
 }
 
-impl Controller for LoginCodeState {
-    async fn handle_event(&mut self, event: &Event) -> Result<()> {
+impl Controller for LoginScreen {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Enter => {
-                    let token = self.app.init_auth(&self.input_phone_number).await?;
+                    let token = self.ctx.init_auth(&self.input_phone_number).await?;
                     self.login_token = token;
+                    let phone_number_state = AuthPhoneNumber {
+                        phone: self.input_phone_number.clone(),
+                    };
+                    let state = StateMachine {
+                        ctx: self.ctx.clone(),
+                        state: phone_number_state,
+                    };
+                    return Ok(Some(StateWrapper::Auth(AuthState::PhoneNumber(state))));
                 }
                 KeyCode::Backspace => {
                     if !self.input_phone_number.is_empty() {
@@ -206,11 +215,11 @@ impl Controller for LoginCodeState {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 
-impl Screen for LoginCodeState {
+impl Screen for LoginScreen {
     fn draw(&self, f: &mut Frame) {
         // Create a centered area for the authentication card
         let chunks = Layout::default()
@@ -269,13 +278,13 @@ impl Screen for LoginCodeState {
         ));
     }
 }
-pub struct PhoneNumberState {
+pub struct PhoneNumberScreen {
     pub input_phone_number: String,
     login_token: Option<LoginToken>,
     app: Arc<Context>,
 }
 
-impl PhoneNumberState {
+impl PhoneNumberScreen {
     pub fn new(app: Arc<Context>) -> Self {
         Self {
             input_phone_number: String::new(),
@@ -285,8 +294,8 @@ impl PhoneNumberState {
     }
 }
 
-impl Controller for PhoneNumberState {
-    async fn handle_event(&mut self, event: &Event) -> Result<()> {
+impl Controller for PhoneNumberScreen {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Enter => {
@@ -302,11 +311,11 @@ impl Controller for PhoneNumberState {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 
-impl Screen for PhoneNumberState {
+impl Screen for PhoneNumberScreen {
     fn draw(&self, f: &mut Frame) {
         // Create a centered area for the authentication card
         let chunks = Layout::default()
