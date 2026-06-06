@@ -1,22 +1,29 @@
+mod app;
+mod ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use directories::ProjectDirs;
 use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_client::{Client, SignInError};
-use grammers_mtsender::SenderPool;
-use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use grammers_tl_types::enums::messages::ForumTopics;
 use grammers_tl_types::functions::messages::GetForumTopics;
 use log::LevelFilter;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::prelude::{Backend, CrosstermBackend};
+use ratatui::{Terminal, TerminalOptions};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
 use telomere_core::downloader::DownlaoderBuilder;
+
+use crate::app::Application;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -25,18 +32,23 @@ enum PeerType {
     Chat,
 }
 
-const SESSION_FILE: &str = "telomere.session";
+#[derive(Debug, Clone, Copy)]
+pub enum AppMode {
+    Interactive,
+    Cli,
+}
 
 #[derive(Parser)]
 #[command(name = "tg-dl")]
-#[command(about = "Telegram CLI Media Downloader", long_about = None)]
+#[command(about = "Telegram CLI & TUI Media Downloader", long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+    /// Launch the interactive Terminal User Interface (TUI)
+    #[arg(short, long)]
+    interactive: bool,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+enum Command {
     /// List all available Telegram peers/chats
     List {
         ///Filter by type e.g Groups, Channels, User
@@ -94,82 +106,18 @@ async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<HashMap<i32
     Ok(filtered_topics)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize the native systemd journal logger
-    JournalLog::new()?
-        .with_extra_fields(vec![("VERSION", env!("CARGO_PKG_VERSION"))])
-        .with_syslog_identifier("telomere".to_string())
-        .install()?;
-
-    log::set_max_level(LevelFilter::Info);
-
-    log::info!("Telomere media downloader initializing natively inside systemd!");
-
-    let api_id_path = env::var("TG_ID_FILE")?
-        .parse::<PathBuf>()
-        .expect("TG_ID invalid");
-
-    let tg_hash_path = env::var("TG_HASH_FILE")?
-        .parse::<PathBuf>()
-        .expect("TG_HASH_FILE invalid");
-
-    let api_id_raw = tokio::fs::read_to_string(api_id_path).await?;
-    let tg_hash_raw = tokio::fs::read_to_string(tg_hash_path).await?;
-
-    let api_id = api_id_raw.trim().parse()?;
-    let tg_hash = tg_hash_raw.trim().parse::<String>()?;
-
-    let project_dirs = ProjectDirs::from("org", "ultrainfinite", "telomere-cli")
-        .expect("Project Directores coudld not eb fetched!");
-
-    let data_dir = project_dirs.data_dir();
-
-    if !data_dir.exists() {
-        tokio::fs::create_dir_all(&data_dir).await?;
-    }
-
-    let session = Arc::new(SqliteSession::open(data_dir.join(SESSION_FILE)).await?);
-
-    let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
-    let client = Client::new(handle);
-    let _ = tokio::spawn(runner.run());
-
-    if !client.is_authorized().await? {
-        println!("Signing in...");
-        let phone = prompt("Enter your phone number (international format): ")?;
-        let token = client.request_login_code(&phone, &tg_hash).await?;
-        let code = prompt("Enter the code you received: ")?;
-        let signed_in = client.sign_in(&token, &code).await;
-        match signed_in {
-            Err(SignInError::PasswordRequired(password_token)) => {
-                // Note: this `prompt` method will echo the password in the console.
-                //       Real code might want to use a better way to handle this.
-                let hint = password_token.hint().unwrap();
-                let prompt_message = format!("Enter the password (hint {}): ", &hint);
-                let password = prompt(prompt_message.as_str())?;
-
-                client
-                    .check_password(password_token, password.trim())
-                    .await?;
-            }
-            Ok(_) => (),
-            Err(e) => panic!("{}", e),
-        };
-        println!("Signed in!");
-    }
-
-    let cli = Cli::parse();
-
-    match cli.command {
-        Commands::List { filter } => {
+async fn run_app_cli(app: Application, cli: Command) -> Result<()> {
+    let client = app.client;
+    match cli {
+        Command::List { filter } => {
             let mut dialog_iter = client.iter_dialogs();
 
             while let Some(dialog) = dialog_iter.next().await? {
                 display_dialog(dialog, filter);
             }
+            Ok(())
         }
-        Commands::Forum { name } => {
+        Command::Forum { name } => {
             let mut dialog_iter = client.iter_dialogs();
 
             let mut search_dialog = None;
@@ -192,8 +140,10 @@ async fn main() -> Result<()> {
                     println!("Title : {}\tID : {}", topic.title, id);
                 }
             }
+
+            Ok(())
         }
-        Commands::Download {
+        Command::Download {
             name,
             path,
             limit,
@@ -240,7 +190,62 @@ async fn main() -> Result<()> {
             } else {
                 println!("Could not find peer!");
             }
+            Ok(())
         }
+    }
+}
+
+pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: Application) -> io::Result<bool>
+where
+    io::Error: From<B::Error>,
+{
+    loop {
+        terminal.draw(|f| {
+            ui::draw(f, &app);
+        })?;
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize the native systemd journal logger
+    JournalLog::new()?
+        .with_extra_fields(vec![("VERSION", env!("CARGO_PKG_VERSION"))])
+        .with_syslog_identifier("telomere".to_string())
+        .install()?;
+
+    log::set_max_level(LevelFilter::Info);
+
+    log::info!("Telomere media downloader initializing natively inside systemd!");
+
+    let app = Application::new().await?;
+
+    let phone = prompt("Enter Phone Number in international format")?;
+
+    if let Some(token) = app.init_auth(phone).await? {
+        let code = prompt("Enter code")?;
+
+        app.finish_auth(code, token).await?;
+    }
+
+    let cli = Cli::parse();
+
+    if cli.interactive {
+        // setup terminal
+        enable_raw_mode()?;
+        let mut stderr = io::stderr(); // This is a special case. Normally using stdout is fine
+        execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
+        let backend = CrosstermBackend::new(stderr);
+        let mut terminal = Terminal::new(backend)?;
+        run_app(&mut terminal, app).await?;
+        disable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+    } else {
     }
 
     Ok(())
