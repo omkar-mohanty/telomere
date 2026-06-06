@@ -12,7 +12,9 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::ui::{Controller, CurrentScreen, Screen};
+use crate::ui::{
+    AuthScreen, Controller, CurrentScreen, PeerSelectionScreen, PhoneNumberScreen, Screen,
+};
 
 pub struct StateMachine<S> {
     pub ctx: Arc<Context>,
@@ -26,15 +28,6 @@ pub enum StateWrapper {
     ForumTopicSelection,
     Download(StateMachine<DownloadState>),
     Done,
-}
-
-impl StateWrapper {
-    pub fn new(ctx: Arc<Context>) -> Self {
-        Self::Init(StateMachine {
-            ctx,
-            state: InitState,
-        })
-    }
 }
 
 pub struct PeerSelection {
@@ -70,8 +63,28 @@ pub struct Application {
 impl Application {
     pub async fn new() -> Result<Self> {
         let ctx = Arc::new(Context::new().await?);
-        let current_screen = CurrentScreen::new(Arc::clone(&ctx)).await?;
-        let state_wrapper = StateWrapper::new(Arc::clone(&ctx));
+
+        let (current_screen, state_wrapper) = if ctx.client.is_authorized().await? {
+            (
+                CurrentScreen::PeerSelectionScreen(PeerSelectionScreen::new(ctx.clone())),
+                StateWrapper::PeerSelection(StateMachine {
+                    ctx: ctx.clone(),
+                    state: PeerSelection { peer_ref: None },
+                }),
+            )
+        } else {
+            (
+                CurrentScreen::AuthScreen(AuthScreen::PhoneNumber(PhoneNumberScreen::new(
+                    ctx.clone(),
+                ))),
+                StateWrapper::Auth(AuthState::PhoneNumber(StateMachine {
+                    ctx: ctx.clone(),
+                    state: AuthPhoneNumber {
+                        phone: String::new(),
+                    },
+                })),
+            )
+        };
         Ok(Self {
             state_wrapper,
             ctx,
@@ -91,11 +104,16 @@ impl Application {
             let event = event::read()?;
             if let Some(transition) = self.current_screen.handle_event(&event).await? {
                 let current_state = self.state_wrapper;
-                match (current_state, transition) {
+                match (current_state, &transition) {
                     (Auth(AuthState::PhoneNumber(_phone)), Auth(AuthState::LoginCode(_login))) => {
                         todo!()
                     }
-                    (_, PeerSelection(peer)) => todo!(),
+                    (_, PeerSelection(_)) => {
+                        self.state_wrapper = transition;
+                        self.current_screen = CurrentScreen::PeerSelectionScreen(
+                            PeerSelectionScreen::new(self.ctx.clone()),
+                        );
+                    }
                     (PeerSelection(_), ForumTopicSelection) => todo!(),
                     (_, _) => todo!(),
                 }
