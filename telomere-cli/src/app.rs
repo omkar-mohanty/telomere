@@ -5,35 +5,99 @@ use grammers_client::client::LoginToken;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
-use grammers_tl_types::enums::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::{Terminal, crossterm::event::Event};
-use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ui::{Controller, CurrentScreen, Screen};
 
-pub enum State {
-    Init,
-    Auth {
-        phone: String,
-        login_token: Option<LoginToken>,
-        login_code: Option<String>,
-    },
-    PeerSelection,
-    DownloadSelection {
-        selected_peer: Option<PeerRef>,
-        forum_topics: HashMap<i32, ForumTopic>,
-    },
-    Downloading,
-    Finished,
+pub struct StateMachine<S> {
+    ctx: Arc<Context>,
+    state: S,
+}
+
+impl StateMachine<InitState> {
+    pub async fn check_session(self) -> Result<StateWrapper> {
+        if self.ctx.client.is_authorized().await? {
+            Ok(StateWrapper::PeerSelection(StateMachine {
+                ctx: self.ctx,
+                state: PeerSelection { peer_ref: None },
+            }))
+        } else {
+            Ok(StateWrapper::Auth(AuthState::PhoneNumber(StateMachine {
+                ctx: self.ctx,
+                state: AuthPhoneNumber {
+                    phone: String::new(),
+                },
+            })))
+        }
+    }
+}
+
+pub enum StateWrapper {
+    Init(StateMachine<InitState>),
+    Auth(AuthState),
+    PeerSelection(StateMachine<PeerSelection>),
+    ForumTopicSelection,
+    Download(StateMachine<DownloadState>),
+    Done,
+}
+
+impl StateWrapper {
+    pub fn new(ctx: Arc<Context>) -> Self {
+        Self::Init(StateMachine {
+            ctx,
+            state: InitState,
+        })
+    }
+
+    pub async fn step(mut self) -> Result<Self> {
+        use StateWrapper::*;
+        match self {
+            Init(state) => state.check_session().await,
+            PeerSelection(state) => {
+                if state.state.peer_ref.is_none() {
+                    Ok(Self::PeerSelection(state))
+                } else {
+                    Ok(Self::ForumTopicSelection)
+                }
+            }
+            Done => Ok(Self::Done),
+            _ => todo!(),
+        }
+    }
+}
+
+pub struct PeerSelection {
+    pub peer_ref: Option<PeerRef>,
+}
+
+pub enum AuthState {
+    PhoneNumber(StateMachine<AuthPhoneNumber>),
+    LoginCode(StateMachine<AuthLoginCode>),
+}
+
+pub struct InitState;
+pub struct DownloadState {}
+
+pub struct AuthPhoneNumber {
+    phone: String,
+}
+
+pub struct AuthLoginToken {
+    login_token: LoginToken,
+}
+
+pub struct AuthLoginCode {
+    login_code: String,
 }
 
 pub struct Application {
     ctx: Arc<Context>,
+    state_wrapper: StateWrapper,
     current_screen: CurrentScreen,
 }
 
@@ -41,7 +105,9 @@ impl Application {
     pub async fn new() -> Result<Self> {
         let ctx = Arc::new(Context::new().await?);
         let current_screen = CurrentScreen::new(Arc::clone(&ctx)).await?;
+        let state_wrapper = StateWrapper::new(Arc::clone(&ctx));
         Ok(Self {
+            state_wrapper,
             ctx,
             current_screen,
         })
@@ -54,6 +120,13 @@ impl Application {
         B::Error: Sync + Send + 'static,
     {
         loop {
+            self.state_wrapper = self.state_wrapper.step().await?;
+            use StateWrapper::*;
+            match &self.state_wrapper {
+                PeerSelection(peer) => {}
+                Done => return Ok(true),
+                _ => todo!(),
+            };
             terminal.draw(|f| self.current_screen.draw(f))?;
             let event = event::read()?;
             self.current_screen.handle_event(&event).await?;
