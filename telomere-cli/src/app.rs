@@ -4,30 +4,78 @@ use grammers_client::Client;
 use grammers_client::client::LoginToken;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
+use grammers_session::types::PeerRef;
+use grammers_tl_types::enums::ForumTopic;
+use ratatui::crossterm::event::{self, KeyCode};
+use ratatui::prelude::Backend;
+use ratatui::{Terminal, crossterm::event::Event};
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::ui::{Controller, CurrentScreen, Screen};
+
+pub enum State {
+    Init,
+    Auth {
+        phone: String,
+        login_token: Option<LoginToken>,
+        login_code: Option<String>,
+    },
+    PeerSelection,
+    DownloadSelection {
+        selected_peer: Option<PeerRef>,
+        forum_topics: HashMap<i32, ForumTopic>,
+    },
+    Downloading,
+    Finished,
+}
+
 pub struct Application {
+    ctx: Arc<Context>,
+    current_screen: CurrentScreen,
+}
+
+impl Application {
+    pub async fn new() -> Result<Self> {
+        let ctx = Arc::new(Context::new().await?);
+        let current_screen = CurrentScreen::new(Arc::clone(&ctx)).await?;
+        Ok(Self {
+            ctx,
+            current_screen,
+        })
+    }
+}
+
+impl Application {
+    pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<bool>
+    where
+        B::Error: Sync + Send + 'static,
+    {
+        loop {
+            terminal.draw(|f| self.current_screen.draw(f))?;
+            let event = event::read()?;
+            self.current_screen.handle_event(&event).await?;
+
+            if let Event::Key(key) = event {
+                match key.code {
+                    KeyCode::Esc => return Ok(true),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+pub struct Context {
     pub client: Client,
     pub session: Arc<SqliteSession>,
-    pub current_screen: CurrentScreen,
-    pub input_buffer: String,
-}
-
-pub enum CurrentScreen {
-    Auth(AuthScreen),
-    Main,
-}
-
-pub enum AuthScreen {
-    PhoneNumber,
-    LoginCode,
 }
 
 const SESSION_FILE: &str = "telomere.session";
 
-impl Application {
+impl Context {
     pub async fn new() -> Result<Self> {
         let api_id_path = env::var("TG_ID_FILE")?
             .parse::<PathBuf>()
@@ -52,15 +100,10 @@ impl Application {
         let client = Client::new(handle);
         let _ = tokio::spawn(runner.run());
 
-        Ok(Self {
-            client,
-            session,
-            current_screen: CurrentScreen::Auth(AuthScreen::PhoneNumber),
-            input_buffer: String::new(),
-        })
+        Ok(Self { client, session })
     }
 
-    pub async fn init_auth(&self, phone: String) -> Result<Option<LoginToken>> {
+    pub async fn init_auth(&self, phone: &String) -> Result<Option<LoginToken>> {
         if self.client.is_authorized().await? {
             return Ok(None);
         }
@@ -77,7 +120,7 @@ impl Application {
         Ok(Some(token))
     }
 
-    pub async fn finish_auth(&self, code: String, token: LoginToken) -> Result<()> {
+    pub async fn finish_auth(&self, code: &String, token: LoginToken) -> Result<()> {
         let signed_in = self.client.sign_in(&token, &code).await;
 
         match signed_in {

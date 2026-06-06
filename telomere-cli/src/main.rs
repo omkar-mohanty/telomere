@@ -2,20 +2,20 @@ mod app;
 mod ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use grammers_client::Client;
 use grammers_client::peer::{Channel, Dialog, Group, User};
-use grammers_client::{Client, SignInError};
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use grammers_tl_types::enums::messages::ForumTopics;
 use grammers_tl_types::functions::messages::GetForumTopics;
 use log::LevelFilter;
+use ratatui::Terminal;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::prelude::{Backend, CrosstermBackend};
-use ratatui::{Terminal, TerminalOptions};
+use ratatui::prelude::CrosstermBackend;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ use std::{env, io};
 use systemd_journal_logger::JournalLog;
 use telomere_core::downloader::DownlaoderBuilder;
 
-use crate::app::Application;
+use crate::app::{Application, Context};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -106,7 +106,7 @@ async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<HashMap<i32
     Ok(filtered_topics)
 }
 
-async fn run_app_cli(app: Application, cli: Command) -> Result<()> {
+async fn run_app_cli(app: Context, cli: Command) -> Result<()> {
     let client = app.client;
     match cli {
         Command::List { filter } => {
@@ -195,17 +195,6 @@ async fn run_app_cli(app: Application, cli: Command) -> Result<()> {
     }
 }
 
-pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: Application) -> io::Result<bool>
-where
-    io::Error: From<B::Error>,
-{
-    loop {
-        terminal.draw(|f| {
-            ui::draw(f, &app);
-        })?;
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize the native systemd journal logger
@@ -220,14 +209,6 @@ async fn main() -> Result<()> {
 
     let app = Application::new().await?;
 
-    let phone = prompt("Enter Phone Number in international format")?;
-
-    if let Some(token) = app.init_auth(phone).await? {
-        let code = prompt("Enter code")?;
-
-        app.finish_auth(code, token).await?;
-    }
-
     let cli = Cli::parse();
 
     if cli.interactive {
@@ -237,7 +218,7 @@ async fn main() -> Result<()> {
         execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stderr);
         let mut terminal = Terminal::new(backend)?;
-        run_app(&mut terminal, app).await?;
+        let res = app.run(&mut terminal).await;
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
@@ -245,6 +226,7 @@ async fn main() -> Result<()> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+        res?;
     } else {
     }
 
