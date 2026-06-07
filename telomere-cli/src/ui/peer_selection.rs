@@ -9,7 +9,7 @@ use ratatui::{
     crossterm::event::{Event, KeyCode},
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style, Stylize},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -80,14 +80,42 @@ impl Screen for PeerSelectionScreen {
             ])
             .split(chunks[1]);
 
-        // Dummy placeholders to visualize your running dashboard layout
-        let left_pane =
-            Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.").block(
-                Block::default()
-                    .title(" Dialogs ")
-                    .borders(Borders::ALL)
-                    .fg(Color::White),
-            );
+        // Left pane: show loading message or list of peers when ready
+        if self.dialogs.is_empty() {
+            let left_pane =
+                Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.").block(
+                    Block::default()
+                        .title(" Dialogs ")
+                        .borders(Borders::ALL)
+                        .fg(Color::White),
+                );
+            f.render_widget(left_pane, workspace_chunks[0]);
+        } else {
+            let items: Vec<ListItem> = self
+                .dialogs
+                .iter()
+                .map(|dialog| {
+                    let name = dialog.peer().name().unwrap_or("Unknown Chat");
+                    ListItem::new(name)
+                })
+                .collect();
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" Dialogs ")
+                        .borders(Borders::ALL)
+                        .fg(Color::White),
+                )
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▶ ");
+            let mut state = self.list_state.clone();
+            f.render_stateful_widget(list, workspace_chunks[0], &mut state);
+        }
 
         let right_pane = Paragraph::new(
             "Select a dialog to inspect forum topics or manage active background media downloads.",
@@ -100,7 +128,7 @@ impl Screen for PeerSelectionScreen {
         )
         .wrap(Wrap { trim: true });
 
-        f.render_widget(left_pane, workspace_chunks[0]);
+        // Right pane
         f.render_widget(right_pane, workspace_chunks[1]);
 
         // 3. Footer Widget
@@ -120,9 +148,31 @@ impl Controller for PeerSelectionScreen {
         }
 
         if let Event::Key(key) = event {
+            if self.dialogs.is_empty() {
+                return Ok(None);
+            }
+
+            let current = self.list_state.selected().unwrap_or(0);
+
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {}
-                KeyCode::Down | KeyCode::Char('j') => {}
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if current == 0 {
+                        self.dialogs.len() - 1
+                    } else {
+                        current - 1
+                    };
+
+                    self.list_state.select(Some(next));
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let next = if current >= self.dialogs.len() - 1 {
+                        0
+                    } else {
+                        current + 1
+                    };
+
+                    self.list_state.select(Some(next));
+                }
                 KeyCode::Enter => return Ok(Some(StateWrapper::ForumTopicSelection)),
                 _ => {}
             }
