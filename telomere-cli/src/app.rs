@@ -14,13 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ui::{
-    AuthScreen, Controller, CurrentScreen, PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
+    AuthScreen, Controller, CurrentScreen, DownloadScreen, GroupDownloadScreen,
+    PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
 };
 
-pub struct StateMachine<S> {
-    pub ctx: Arc<Context>,
-    pub state: S,
-}
+pub struct StateMachine<S>(pub S);
 
 pub enum StateWrapper {
     Init(StateMachine<InitState>),
@@ -70,22 +68,16 @@ impl Application {
         let (current_screen, state_wrapper) = if ctx.client.is_authorized().await? {
             (
                 CurrentScreen::PeerSelectionScreen(PeerSelectionScreen::new(ctx.clone())),
-                StateWrapper::PeerSelection(StateMachine {
-                    ctx: ctx.clone(),
-                    state: PeerSelection,
-                }),
+                StateWrapper::PeerSelection(StateMachine(PeerSelection)),
             )
         } else {
             (
                 CurrentScreen::AuthScreen(AuthScreen::PhoneNumber(PhoneNumberScreen::new(
                     ctx.clone(),
                 ))),
-                StateWrapper::Auth(AuthState::PhoneNumber(StateMachine {
-                    ctx: ctx.clone(),
-                    state: AuthPhoneNumber {
-                        phone: String::new(),
-                    },
-                })),
+                StateWrapper::Auth(AuthState::PhoneNumber(StateMachine(AuthPhoneNumber {
+                    phone: String::new(),
+                }))),
             )
         };
         Ok(Self {
@@ -125,7 +117,18 @@ impl Application {
                                 PeerSelectionScreen::new(self.ctx.clone()),
                             );
                         }
-                        (_, ForumTopicSelection(forum_topic)) => todo!(),
+                        (_, ForumTopicSelection(forum_topic)) => {
+                            let state = &forum_topic.0;
+
+                            let peer_ref = state.peer_ref.clone();
+                            let group_download =
+                                GroupDownloadScreen::new(self.ctx.clone(), peer_ref);
+                            let screen = CurrentScreen::DownloadScreen(DownloadScreen::Group(
+                                group_download,
+                            ));
+                            self.state_wrapper = transition;
+                            self.current_screen = screen;
+                        }
                         (_, _) => todo!(),
                     }
                 }

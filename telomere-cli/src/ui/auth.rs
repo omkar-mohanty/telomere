@@ -158,10 +158,7 @@ impl Controller for LoginScreen {
                     let phone_number_state = AuthPhoneNumber {
                         phone: self.input_phone_number.clone(),
                     };
-                    let state = StateMachine {
-                        ctx: self.ctx.clone(),
-                        state: phone_number_state,
-                    };
+                    let state = StateMachine(phone_number_state);
                     return Ok(Some(StateWrapper::Auth(AuthState::PhoneNumber(state))));
                 }
                 KeyCode::Backspace => {

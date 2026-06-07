@@ -4,6 +4,7 @@ mod peer_selection;
 use crate::app::StateWrapper;
 use anyhow::Result;
 pub use auth::*;
+pub use download::*;
 pub use peer_selection::*;
 use ratatui::{Frame, crossterm::event::Event};
 
@@ -25,6 +26,7 @@ impl Screen for CurrentScreen {
         match self {
             PeerSelectionScreen(page) => page.draw(f),
             AuthScreen(page) => page.draw(f),
+            DownloadScreen(page) => page.draw(f),
         }
     }
 }
@@ -35,6 +37,7 @@ impl Controller for CurrentScreen {
         match self {
             PeerSelectionScreen(page) => page.handle_event(&event).await,
             AuthScreen(page) => page.handle_event(&event).await,
+            DownloadScreen(page) => page.handle_event(&event).await,
         }
     }
 }
@@ -51,4 +54,5 @@ impl Tick for CurrentScreen {
 pub enum CurrentScreen {
     PeerSelectionScreen(PeerSelectionScreen),
     AuthScreen(AuthScreen),
+    DownloadScreen(DownloadScreen),
 }
