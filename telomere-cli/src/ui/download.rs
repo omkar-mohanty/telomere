@@ -28,6 +28,16 @@ pub enum DownloadScreen {
     Direct,
 }
 
+impl Tick for DownloadScreen {
+    async fn tick(&mut self) -> Result<()> {
+        use DownloadScreen::*;
+        match self {
+            Group(screen) => screen.tick().await,
+            Direct => todo!(),
+        }
+    }
+}
+
 impl Controller for DownloadScreen {
     async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         use DownloadScreen::*;

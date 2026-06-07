@@ -44,8 +44,10 @@ impl Controller for CurrentScreen {
 
 impl Tick for CurrentScreen {
     async fn tick(&mut self) -> Result<()> {
-        if let CurrentScreen::PeerSelectionScreen(screen) = self {
-            screen.tick().await?;
+        match self {
+            CurrentScreen::PeerSelectionScreen(screen) => screen.tick().await?,
+            CurrentScreen::DownloadScreen(screen) => screen.tick().await?,
+            _ => {}
         }
         Ok(())
     }
