@@ -2,7 +2,6 @@ use crate::app::{Context, ForumTopicSelection, StateMachine, StateWrapper};
 use crate::ui::{Controller, Screen, Tick};
 use anyhow::{Error, Result};
 use grammers_client::peer::Dialog;
-use grammers_session::types::PeerRef;
 use ratatui::widgets::ListState;
 use ratatui::{
     Frame,
@@ -12,8 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 
 type PeerSelectionResult = Result<Vec<Dialog>, Error>;
 

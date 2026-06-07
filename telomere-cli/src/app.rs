@@ -5,7 +5,6 @@ use grammers_client::client::LoginToken;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
-use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::{Terminal, crossterm::event::Event};

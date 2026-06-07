@@ -1,12 +1,11 @@
 mod auth;
 mod download;
 mod peer_selection;
-use crate::app::{Context, StateWrapper};
+use crate::app::StateWrapper;
 use anyhow::Result;
 pub use auth::*;
 pub use peer_selection::*;
 use ratatui::{Frame, crossterm::event::Event};
-use std::sync::Arc;
 
 pub trait Tick {
     async fn tick(&mut self) -> Result<()>;
