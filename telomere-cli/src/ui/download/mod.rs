@@ -1,4 +1,7 @@
 mod file_screen;
+
+pub use file_screen::*;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Error, Ok, Result};
@@ -17,7 +20,7 @@ use ratatui::{
 };
 use tokio::task::JoinSet;
 
-use crate::app::{Context, ForumTopicSelection, StateMachine};
+use crate::app::{Context, FileSelection, StateMachine};
 use crate::ui::Tick;
 use crate::{
     app::StateWrapper,
@@ -26,6 +29,7 @@ use crate::{
 
 pub enum DownloadScreen {
     Group(GroupDownloadScreen),
+    File(FileSelectionScreen),
     Direct,
 }
 
@@ -34,6 +38,7 @@ impl Tick for DownloadScreen {
         use DownloadScreen::*;
         match self {
             Group(screen) => screen.tick().await,
+            File(screen) => screen.tick().await,
             Direct => todo!(),
         }
     }
@@ -44,6 +49,7 @@ impl Controller for DownloadScreen {
         use DownloadScreen::*;
         match self {
             Group(group) => group.handle_event(event).await,
+            File(screen) => screen.handle_event(event).await,
             Direct => todo!(),
         }
     }
@@ -53,6 +59,7 @@ impl Screen for DownloadScreen {
     fn draw(&self, f: &mut Frame) {
         use DownloadScreen::*;
         match self {
+            File(screen) => screen.draw(f),
             Group(screen) => screen.draw(f),
             Direct => todo!(),
         }
@@ -65,6 +72,7 @@ pub struct GroupDownloadScreen {
     ctx: Arc<Context>,
     list_state: ListState,
     peer_ref: PeerRef,
+    selected_topics: HashSet<usize>,
     forum_topics: Vec<ForumTopic>,
     join_set: JoinSet<GroupSelectionResult>,
 }
@@ -86,8 +94,18 @@ impl GroupDownloadScreen {
             peer_ref,
             join_set,
             list_state,
+            selected_topics: HashSet::new(),
             forum_topics: Vec::new(),
         }
+    }
+
+    pub async fn refresh(&mut self) {
+        let ctx_clone = self.ctx.clone();
+        let peer_clone = self.peer_ref.clone();
+        self.join_set.spawn(async move {
+            let res = get_forum_topics(&ctx_clone.client, &peer_clone).await?;
+            Ok::<Vec<ForumTopic>>(res)
+        });
     }
 }
 
@@ -136,15 +154,22 @@ impl Screen for GroupDownloadScreen {
             let items: Vec<ListItem> = self
                 .forum_topics
                 .iter()
-                .map(|dialog| {
-                    let name = dialog.title.clone();
-                    ListItem::new(name)
+                .enumerate()
+                .map(|(index, forum_topic)| {
+                    let name = forum_topic.title.clone();
+                    let mut style = Style::default();
+                    let mut prefix = "[ ]";
+                    if self.selected_topics.contains(&index) {
+                        prefix = "[X]";
+                        style = style.fg(Color::Green).add_modifier(Modifier::BOLD);
+                    }
+                    ListItem::new(format!("{}{}", prefix, name)).style(style)
                 })
                 .collect();
             let list = List::new(items)
                 .block(
                     Block::default()
-                        .title(" Dialogs ")
+                        .title(" Forum Topics ")
                         .borders(Borders::ALL)
                         .fg(Color::White),
                 )
@@ -174,7 +199,7 @@ impl Screen for GroupDownloadScreen {
         f.render_widget(right_pane, workspace_chunks[1]);
 
         // 3. Footer Widget
-        let footer_text = "Quit: [Ctrl+C] or [Esc] | Toggle View: [Tab]";
+        let footer_text = "Quit: [Ctrl+C] or [Esc] | Toggle View: [Tab] | Select: s";
         let footer = Paragraph::new(footer_text)
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Left)
@@ -216,7 +241,21 @@ impl Controller for GroupDownloadScreen {
 
                     self.list_state.select(Some(next));
                 }
-                KeyCode::Enter => {}
+                KeyCode::Char('s') => {
+                    if self.selected_topics.contains(&current) {
+                        self.selected_topics.remove(&current);
+                    } else {
+                        self.selected_topics.insert(current);
+                    }
+                }
+                KeyCode::Enter => {
+                    let file_selection = FileSelection {
+                        peer_ref: self.peer_ref.clone(),
+                    };
+                    let state = StateMachine(file_selection);
+
+                    return Ok(Some(StateWrapper::FileSelection(state)));
+                }
                 _ => {}
             }
         }

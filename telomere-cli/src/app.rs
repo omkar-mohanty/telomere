@@ -14,8 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ui::{
-    AuthScreen, Controller, CurrentScreen, DownloadScreen, GroupDownloadScreen,
-    PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
+    AuthScreen, Controller, CurrentScreen, DownloadScreen, FileSelectionScreen,
+    GroupDownloadScreen, PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
 };
 
 pub struct StateMachine<S>(pub S);
@@ -25,6 +25,7 @@ pub enum StateWrapper {
     Auth(AuthState),
     PeerSelection(StateMachine<PeerSelection>),
     ForumTopicSelection(StateMachine<ForumTopicSelection>),
+    FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
     Done,
 }
@@ -34,6 +35,10 @@ pub struct ForumTopicSelection {
 }
 
 pub struct PeerSelection;
+
+pub struct FileSelection {
+    pub peer_ref: PeerRef,
+}
 
 pub enum AuthState {
     PhoneNumber(StateMachine<AuthPhoneNumber>),
@@ -126,6 +131,17 @@ impl Application {
                             let screen = CurrentScreen::DownloadScreen(DownloadScreen::Group(
                                 group_download,
                             ));
+                            self.state_wrapper = transition;
+                            self.current_screen = screen;
+                        }
+                        (_, FileSelection(file_selection_state)) => {
+                            let state = &file_selection_state.0;
+                            let peer_ref = state.peer_ref.clone();
+                            let file_selection =
+                                FileSelectionScreen::new(self.ctx.clone(), peer_ref);
+                            let screen =
+                                CurrentScreen::DownloadScreen(DownloadScreen::File(file_selection));
+
                             self.state_wrapper = transition;
                             self.current_screen = screen;
                         }
