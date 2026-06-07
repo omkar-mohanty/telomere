@@ -1,5 +1,5 @@
-use crate::app::{Context, StateWrapper};
-use crate::ui::{Controller, Screen};
+use crate::app::{Context, ForumTopicSelection, StateMachine, StateWrapper};
+use crate::ui::{Controller, Screen, Tick};
 use anyhow::{Error, Result};
 use grammers_client::peer::Dialog;
 use grammers_session::types::PeerRef;
@@ -140,13 +140,20 @@ impl Screen for PeerSelectionScreen {
         f.render_widget(footer, chunks[2]);
     }
 }
-impl Controller for PeerSelectionScreen {
-    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
-        if let Some(joined_task) = self.join_set.try_join_next() {
+
+impl Tick for PeerSelectionScreen {
+    async fn tick(&mut self) -> Result<()> {
+        while let Some(joined_task) = self.join_set.try_join_next() {
             let dialogs = joined_task??;
             self.dialogs.extend(dialogs);
         }
 
+        Ok(())
+    }
+}
+
+impl Controller for PeerSelectionScreen {
+    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
         if let Event::Key(key) = event {
             if self.dialogs.is_empty() {
                 return Ok(None);
@@ -173,7 +180,14 @@ impl Controller for PeerSelectionScreen {
 
                     self.list_state.select(Some(next));
                 }
-                KeyCode::Enter => return Ok(Some(StateWrapper::ForumTopicSelection)),
+                KeyCode::Enter => {
+                    let dialog = self.dialogs.get(current).unwrap();
+                    let peer_ref = dialog.peer_ref();
+                    return Ok(Some(StateWrapper::ForumTopicSelection(StateMachine {
+                        ctx: self.ctx.clone(),
+                        state: ForumTopicSelection { peer_ref },
+                    })));
+                }
                 _ => {}
             }
         }

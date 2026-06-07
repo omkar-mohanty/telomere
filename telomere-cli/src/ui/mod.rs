@@ -8,6 +8,10 @@ pub use peer_selection::*;
 use ratatui::{Frame, crossterm::event::Event};
 use std::sync::Arc;
 
+pub trait Tick {
+    async fn tick(&mut self) -> Result<()>;
+}
+
 pub trait Screen {
     fn draw(&self, f: &mut Frame);
 }
@@ -33,6 +37,15 @@ impl Controller for CurrentScreen {
             PeerSelectionScreen(page) => page.handle_event(&event).await,
             AuthScreen(page) => page.handle_event(&event).await,
         }
+    }
+}
+
+impl Tick for CurrentScreen {
+    async fn tick(&mut self) -> Result<()> {
+        if let CurrentScreen::PeerSelectionScreen(screen) = self {
+            screen.tick().await?;
+        }
+        Ok(())
     }
 }
 

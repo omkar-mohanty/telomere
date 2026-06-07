@@ -5,15 +5,17 @@ use grammers_client::client::LoginToken;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
+use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::{Terminal, crossterm::event::Event};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::ui::{
-    AuthScreen, Controller, CurrentScreen, PeerSelectionScreen, PhoneNumberScreen, Screen,
+    AuthScreen, Controller, CurrentScreen, PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
 };
 
 pub struct StateMachine<S> {
@@ -25,14 +27,16 @@ pub enum StateWrapper {
     Init(StateMachine<InitState>),
     Auth(AuthState),
     PeerSelection(StateMachine<PeerSelection>),
-    ForumTopicSelection,
+    ForumTopicSelection(StateMachine<ForumTopicSelection>),
     Download(StateMachine<DownloadState>),
     Done,
 }
 
-pub struct PeerSelection {
-    pub peer_ref: Option<PeerRef>,
+pub struct ForumTopicSelection {
+    pub peer_ref: PeerRef,
 }
+
+pub struct PeerSelection;
 
 pub enum AuthState {
     PhoneNumber(StateMachine<AuthPhoneNumber>),
@@ -69,7 +73,7 @@ impl Application {
                 CurrentScreen::PeerSelectionScreen(PeerSelectionScreen::new(ctx.clone())),
                 StateWrapper::PeerSelection(StateMachine {
                     ctx: ctx.clone(),
-                    state: PeerSelection { peer_ref: None },
+                    state: PeerSelection,
                 }),
             )
         } else {
@@ -101,28 +105,37 @@ impl Application {
         loop {
             use StateWrapper::*;
             terminal.draw(|f| self.current_screen.draw(f))?;
-            let event = event::read()?;
-            if let Some(transition) = self.current_screen.handle_event(&event).await? {
-                let current_state = self.state_wrapper;
-                match (current_state, &transition) {
-                    (Auth(AuthState::PhoneNumber(_phone)), Auth(AuthState::LoginCode(_login))) => {
-                        todo!()
-                    }
-                    (_, PeerSelection(_)) => {
-                        self.state_wrapper = transition;
-                        self.current_screen = CurrentScreen::PeerSelectionScreen(
-                            PeerSelectionScreen::new(self.ctx.clone()),
-                        );
-                    }
-                    (PeerSelection(_), ForumTopicSelection) => todo!(),
-                    (_, _) => todo!(),
-                }
-            }
 
-            if let Event::Key(key) = event {
-                match key.code {
-                    KeyCode::Esc => return Ok(true),
-                    _ => {}
+            self.current_screen.tick().await?;
+
+            if event::poll(Duration::from_millis(16))? {
+                let event = event::read()?;
+
+                if let Some(transition) = self.current_screen.handle_event(&event).await? {
+                    let current_state = self.state_wrapper;
+                    match (current_state, &transition) {
+                        (
+                            Auth(AuthState::PhoneNumber(_phone)),
+                            Auth(AuthState::LoginCode(_login)),
+                        ) => {
+                            todo!()
+                        }
+                        (_, PeerSelection(_)) => {
+                            self.state_wrapper = transition;
+                            self.current_screen = CurrentScreen::PeerSelectionScreen(
+                                PeerSelectionScreen::new(self.ctx.clone()),
+                            );
+                        }
+                        (_, ForumTopicSelection(forum_topic)) => todo!(),
+                        (_, _) => todo!(),
+                    }
+                }
+
+                if let Event::Key(key) = event {
+                    match key.code {
+                        KeyCode::Esc => return Ok(true),
+                        _ => {}
+                    }
                 }
             }
         }
