@@ -42,12 +42,11 @@ pub enum AppMode {
 #[command(name = "tg-dl")]
 #[command(about = "Telegram CLI & TUI Media Downloader", long_about = None)]
 struct Cli {
-    /// Launch the interactive Terminal User Interface (TUI)
-    #[arg(short, long)]
-    interactive: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Command {
     /// List all available Telegram peers/chats
     List {
@@ -211,24 +210,27 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    if cli.interactive {
-        // setup terminal
-        enable_raw_mode()?;
-        let mut stderr = io::stderr(); // This is a special case. Normally using stdout is fine
-        execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
-        let backend = CrosstermBackend::new(stderr);
-        let mut terminal = Terminal::new(backend)?;
-        let res = app.run(&mut terminal).await;
-        disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
-        terminal.show_cursor()?;
-        res?;
+    // setup terminal
+    enable_raw_mode()?;
+    let mut stderr = io::stderr(); // This is a special case. Normally using stdout is fine
+    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stderr);
+    let mut terminal = Terminal::new(backend)?;
+
+    let res = if cli.command.is_none() {
+        app.run(&mut terminal).await
     } else {
-    }
+        todo!()
+    };
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    res?;
 
     Ok(())
 }

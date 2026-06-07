@@ -1,7 +1,9 @@
 use crate::app::{Context, StateWrapper};
 use crate::ui::{Controller, Screen};
-use anyhow::Result;
+use anyhow::{Error, Result};
+use grammers_client::peer::Dialog;
 use grammers_session::types::PeerRef;
+use ratatui::widgets::ListState;
 use ratatui::{
     Frame,
     crossterm::event::{Event, KeyCode},
@@ -10,19 +12,39 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::task::{JoinHandle, JoinSet};
+
+type PeerSelectionResult = Result<Vec<Dialog>, Error>;
 
 pub struct PeerSelectionScreen {
     pub ctx: Arc<Context>,
-    pub selected_peer: usize,
-    pub peers: Vec<PeerRef>,
+    pub list_state: ListState,
+    pub dialogs: Vec<Dialog>,
+    pub join_set: JoinSet<PeerSelectionResult>,
 }
 
 impl PeerSelectionScreen {
     pub fn new(ctx: Arc<Context>) -> Self {
+        let list_state = ListState::default();
+        let dialogs = Vec::new();
+        let mut iter_dialogs = ctx.client.iter_dialogs();
+        let mut join_set = JoinSet::new();
+
+        join_set.spawn(async move {
+            let mut dialogs = Vec::new();
+            while let Some(dialog) = iter_dialogs.next().await? {
+                dialogs.push(dialog);
+            }
+
+            Ok::<Vec<Dialog>, anyhow::Error>(dialogs)
+        });
+
         Self {
             ctx,
-            selected_peer: 0,
-            peers: Vec::new(),
+            list_state,
+            dialogs,
+            join_set,
         }
     }
 }
@@ -92,6 +114,11 @@ impl Screen for PeerSelectionScreen {
 }
 impl Controller for PeerSelectionScreen {
     async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
+        if let Some(joined_task) = self.join_set.try_join_next() {
+            let dialogs = joined_task??;
+            self.dialogs.extend(dialogs);
+        }
+
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {}
