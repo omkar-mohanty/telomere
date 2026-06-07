@@ -1,3 +1,4 @@
+mod file_screen;
 use std::sync::Arc;
 
 use anyhow::{Error, Ok, Result};
