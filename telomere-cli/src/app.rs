@@ -5,6 +5,7 @@ use grammers_client::client::LoginToken;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
+use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::{Terminal, crossterm::event::Event};
@@ -38,6 +39,7 @@ pub struct PeerSelection;
 
 pub struct FileSelection {
     pub peer_ref: PeerRef,
+    pub forum_topics: Vec<ForumTopic>,
 }
 
 pub enum AuthState {
@@ -137,8 +139,9 @@ impl Application {
                         (_, FileSelection(file_selection_state)) => {
                             let state = &file_selection_state.0;
                             let peer_ref = state.peer_ref.clone();
+                            let forum_topics = state.forum_topics.clone();
                             let file_selection =
-                                FileSelectionScreen::new(self.ctx.clone(), peer_ref);
+                                FileSelectionScreen::new(self.ctx.clone(), peer_ref, forum_topics);
                             let screen =
                                 CurrentScreen::DownloadScreen(DownloadScreen::File(file_selection));
 

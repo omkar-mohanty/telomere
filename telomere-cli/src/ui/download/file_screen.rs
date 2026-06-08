@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::{Error, Result};
-use clap::builder::Str;
-use grammers_client::media::{Document, Media};
+use anyhow::Error;
+use grammers_client::media::Media;
 use grammers_session::types::PeerRef;
+use grammers_tl_types::types::ForumTopic;
 use ratatui::widgets::ListState;
 use ratatui::{
     Frame,
@@ -13,7 +13,7 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
-use tokio::task::JoinSet;
+use tokio::sync::mpsc::Receiver;
 
 use crate::{
     app::Context,
@@ -24,17 +24,19 @@ pub struct FileSelectionScreen {
     ctx: Arc<Context>,
     documents: Vec<Media>,
     selected_documents: HashSet<usize>,
-    message_join_set: JoinSet<Result<Vec<Media>>>,
+    forum_topics: Vec<ForumTopic>,
+    rx: Receiver<Vec<Media>>,
     list_state: ListState,
 }
 
 impl FileSelectionScreen {
-    pub fn new(ctx: Arc<Context>, peer_ref: PeerRef) -> Self {
-        let mut message_join_set = JoinSet::new();
+    pub fn new(ctx: Arc<Context>, peer_ref: PeerRef, forum_topics: Vec<ForumTopic>) -> Self {
         let client = ctx.client.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(50);
         let list_state = ListState::default();
+        let mut total_media = 0;
 
-        message_join_set.spawn(async move {
+        tokio::spawn(async move {
             let mut message_iter = client.iter_messages(peer_ref);
             let mut res = Vec::new();
 
@@ -42,27 +44,36 @@ impl FileSelectionScreen {
                 match message_iter.next().await {
                     Ok(Some(message)) => {
                         if let Some(media) = message.media() {
+                            total_media += 1;
                             res.push(media);
                         }
                     }
-                    Ok(None) => break, // Reached end of history cleanly
+                    Ok(None) => {
+                        break;
+                    }
                     Err(e) => {
-                        // Catch the precise network error invocation here!
-                        // This lets us write the error text to a local debug log file
+                        log::error!("Error Received when fetching media : {}", e);
                         return Err(Error::from(e));
                     }
                 }
+
+                if res.len() >= 50 {
+                    let send = std::mem::take(&mut res);
+                    let _ = tx.send(send).await;
+                }
             }
 
-            Ok::<Vec<Media>, Error>(res)
+            log::info!("Total Media Received : {}", total_media);
+            Ok::<(), Error>(())
         });
 
         Self {
             ctx,
+            rx,
             selected_documents: HashSet::new(),
-            message_join_set,
             documents: Vec::new(),
             list_state,
+            forum_topics,
         }
     }
 }
@@ -214,11 +225,8 @@ impl Screen for FileSelectionScreen {
 
 impl Tick for FileSelectionScreen {
     async fn tick(&mut self) -> anyhow::Result<()> {
-        while let Some(res) = self.message_join_set.try_join_next() {
-            let res = res??;
-
+        while let Ok(res) = self.rx.try_recv() {
             self.documents.extend(res);
-            // Quick debug hack
         }
         Ok(())
     }

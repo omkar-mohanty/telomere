@@ -251,7 +251,9 @@ impl Controller for GroupDownloadScreen {
                 KeyCode::Enter => {
                     let file_selection = FileSelection {
                         peer_ref: self.peer_ref.clone(),
+                        forum_topics: self.forum_topics.clone(),
                     };
+
                     let state = StateMachine(file_selection);
 
                     return Ok(Some(StateWrapper::FileSelection(state)));
@@ -266,25 +268,56 @@ impl Controller for GroupDownloadScreen {
 async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<Vec<ForumTopic>> {
     let mut filtered_topics = Vec::new();
 
-    let forum_topic_res = client
-        .invoke(&GetForumTopics {
-            peer: peer.into(),
-            q: None,
-            offset_date: 0,
-            offset_id: 0,
-            offset_topic: 0,
-            limit: 0,
-        })
-        .await?;
-    let topics = {
-        let ForumTopics::Topics(topics) = forum_topic_res;
-        topics.topics
-    };
+    // Tracking markers for API pagination chunk offsets
+    let mut current_offset_date = 0;
+    let mut current_offset_id = 0;
+    let mut current_offset_topic = 0;
 
-    for topic in topics {
-        match topic {
-            grammers_tl_types::enums::ForumTopic::Topic(topic) => filtered_topics.push(topic),
-            _ => {}
+    loop {
+        let forum_topic_res = client
+            .invoke(&GetForumTopics {
+                peer: peer.into(),
+                q: None,
+                offset_date: current_offset_date,
+                offset_id: current_offset_id,
+                offset_topic: current_offset_topic,
+                limit: 100, // Request healthy chunk page boundaries
+            })
+            .await?;
+
+        let ForumTopics::Topics(topics_payload) = forum_topic_res;
+
+        if topics_payload.topics.is_empty() {
+            break; // Reached the bottom of the group layout history
+        }
+
+        // Keep track of the last element's positions to pass into the next pagination step
+        let mut last_topic_id = None;
+
+        for topic in topics_payload.topics {
+            if let grammers_tl_types::enums::ForumTopic::Topic(t) = topic {
+                last_topic_id = Some(t.id);
+                filtered_topics.push(t);
+            }
+        }
+
+        // If your group has a total item count, you can also break early when match lengths line up
+        if filtered_topics.len() >= topics_payload.count as usize {
+            break;
+        }
+
+        // Update tracking markers based on the last processed element
+        if let Some(id) = last_topic_id {
+            // Adjust markers using payload fields to request subsequent records safely
+            current_offset_topic = id;
+
+            // Fallback safety to prevent infinite loops if values stall out
+            if let Some(last_item) = filtered_topics.last() {
+                current_offset_date = last_item.date;
+                current_offset_id = last_item.id; // Set relative to message reference bounds
+            }
+        } else {
+            break;
         }
     }
 
