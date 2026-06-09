@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use grammers_client::media::Media;
+use grammers_client::message::Message;
 use grammers_session::types::PeerRef;
+use grammers_tl_types::enums::MessageReplyHeader;
 use grammers_tl_types::types::ForumTopic;
 use ratatui::widgets::ListState;
 use ratatui::{
@@ -24,9 +26,20 @@ pub struct FileSelectionScreen {
     ctx: Arc<Context>,
     documents: Vec<Media>,
     selected_documents: HashSet<usize>,
-    forum_topics: Vec<ForumTopic>,
     rx: Receiver<Vec<Media>>,
     list_state: ListState,
+}
+
+fn get_thread_root_id(msg: &Message) -> Option<i32> {
+    let reply_header = msg.reply_header();
+    if let Some(MessageReplyHeader::Header(hdr)) = reply_header {
+        let thread_root_id = hdr
+            .reply_to_top_id
+            .or(hdr.reply_to_msg_id)
+            .expect("forum topic but no msg id");
+        return Some(thread_root_id);
+    }
+    None
 }
 
 impl FileSelectionScreen {
@@ -35,8 +48,10 @@ impl FileSelectionScreen {
         let (tx, rx) = tokio::sync::mpsc::channel(50);
         let list_state = ListState::default();
         let mut total_media = 0;
+        let mut added_media = 0;
 
         tokio::spawn(async move {
+            log::info!("Fetching Media Files");
             let mut message_iter = client.iter_messages(peer_ref);
             let mut res = Vec::new();
 
@@ -45,7 +60,15 @@ impl FileSelectionScreen {
                     Ok(Some(message)) => {
                         if let Some(media) = message.media() {
                             total_media += 1;
-                            res.push(media);
+                            let thread_id = get_thread_root_id(&message);
+                            if let Some(thread_id) = thread_id
+                                && forum_topics
+                                    .iter()
+                                    .any(|forum_topic| forum_topic.id == thread_id)
+                            {
+                                added_media += 1;
+                                res.push(media);
+                            }
                         }
                     }
                     Ok(None) => {
@@ -64,6 +87,12 @@ impl FileSelectionScreen {
             }
 
             log::info!("Total Media Received : {}", total_media);
+            log::info!("Total Media Filtered : {}", added_media);
+
+            if !res.is_empty() {
+                let _ = tx.send(res).await;
+            }
+
             Ok::<(), Error>(())
         });
 
@@ -73,7 +102,6 @@ impl FileSelectionScreen {
             selected_documents: HashSet::new(),
             documents: Vec::new(),
             list_state,
-            forum_topics,
         }
     }
 }
@@ -110,6 +138,13 @@ impl Controller for FileSelectionScreen {
                         self.selected_documents.remove(&current);
                     } else {
                         self.selected_documents.insert(current);
+                    }
+                }
+                KeyCode::Char('S') => {
+                    if self.selected_documents.len() == self.documents.len() - 1 {
+                        self.selected_documents.drain();
+                    } else {
+                        self.selected_documents = (0..=self.documents.len() - 1).collect();
                     }
                 }
                 KeyCode::Enter => {}

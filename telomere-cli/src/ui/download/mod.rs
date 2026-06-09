@@ -1,3 +1,4 @@
+mod download_screen;
 mod file_screen;
 
 pub use file_screen::*;
@@ -249,9 +250,16 @@ impl Controller for GroupDownloadScreen {
                     }
                 }
                 KeyCode::Enter => {
+                    let target_topics = self
+                        .forum_topics
+                        .iter()
+                        .enumerate()
+                        .filter(|(idx, _)| self.selected_topics.contains(&idx))
+                        .map(|(_, topic)| topic.clone())
+                        .collect();
                     let file_selection = FileSelection {
                         peer_ref: self.peer_ref.clone(),
-                        forum_topics: self.forum_topics.clone(),
+                        forum_topics: target_topics,
                     };
 
                     let state = StateMachine(file_selection);
