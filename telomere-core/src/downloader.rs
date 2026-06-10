@@ -50,6 +50,7 @@ impl DownlaoderBuilder {
 pub struct DownloadTask {
     medias: Vec<Media>,
     download_folder: PathBuf,
+    retries: Option<usize>,
 }
 
 pub struct Downloader {
@@ -58,52 +59,62 @@ pub struct Downloader {
     tasks: JoinSet<Result<()>>,
 }
 
-async fn download_media(
-    client: Client,
-    media: Media,
-    tx: UnboundedSender<DownloadEvent>,
-    folder_path: PathBuf,
-) -> Result<()> {
-    use InvocationError::*;
-    todo!("Implement getting filename from media");
-    let path = folder_path.join("/filename.file");
-    let mut stream = client.iter_download(&media);
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .await?;
-
-    loop {
-        match stream.next().await {
-            Ok(Some(chunk)) => {
-                file.write_all(&chunk).await?;
-                file.flush().await?;
+impl DownloadTask {
+    async fn download_media(
+        self,
+        client: Client,
+        media: Media,
+        tx: UnboundedSender<DownloadEvent>,
+        folder_path: PathBuf,
+    ) -> Result<()> {
+        use InvocationError::*;
+        todo!("Implement getting filename from media");
+        let path = folder_path.join("/filename.file");
+        match media {
+            Media::Photo(p) => {}
+            Media::Document(doc) => {}
+            _ => {
+                return Err(anyhow::Error::msg("Unsupported Media Type"));
             }
-            Ok(None) => return Ok(()),
-            Err(e) => match &e {
-                Rpc(rpc_error) => match rpc_error {
-                    RpcError {
-                        code: 420, value, ..
-                    } => {
-                        log::error!("RPC Error Floor Wait : {:?}", value);
-                    }
-                    RpcError {
-                        code: 400, value, ..
-                    } => {
-                        log::error!("RPC Error File Ref Expired : {:?}", value);
-                    }
+        };
+        let mut stream = client.iter_download(&media);
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .await?;
+
+        loop {
+            match stream.next().await {
+                Ok(Some(chunk)) => {
+                    file.write_all(&chunk).await?;
+                    file.flush().await?;
+                }
+                Ok(None) => return Ok(()),
+                Err(e) => match &e {
+                    Rpc(rpc_error) => match rpc_error {
+                        RpcError {
+                            code: 420, value, ..
+                        } => {
+                            log::error!("RPC Error Floor Wait : {:?}", value);
+                        }
+                        RpcError {
+                            code: 400, value, ..
+                        } => {
+                            log::error!("RPC Error File Ref Expired : {:?}", value);
+                        }
+                        _ => {
+                            let _ = tx.send(e.into());
+                            return Ok(());
+                        }
+                    },
                     _ => {
                         let _ = tx.send(e.into());
                         return Ok(());
                     }
                 },
-                _ => {
-                    let _ = tx.send(e.into());
-                    return Ok(());
-                }
-            },
+            }
         }
     }
 }
