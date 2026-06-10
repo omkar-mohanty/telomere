@@ -3,9 +3,11 @@ use directories::ProjectDirs;
 use grammers_client::Client;
 use grammers_client::client::LoginToken;
 use grammers_client::media::Media;
+use grammers_client::message::Message;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
+use grammers_tl_types::enums::FileHash;
 use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
@@ -16,156 +18,163 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ui::{
-    AuthScreen, Controller, CurrentScreen, DownloadScreen, FileSelectionScreen,
-    GroupDownloadScreen, PeerSelectionScreen, PhoneNumberScreen, Screen, Tick,
+    Controller, CurrentScreen, DownloadScreen, FileSelectionScreen, GroupDownloadScreen,
+    PeerSelectionScreen, Screen, Tick,
 };
 
 pub struct StateMachine<S>(pub S);
 
+impl TryFrom<StateMachine<PeerSelection>> for StateMachine<ForumTopicSelection> {
+    type Error = anyhow::Error;
+    fn try_from(value: StateMachine<PeerSelection>) -> Result<Self> {
+        let peer_ref = value.0.peer_ref;
+        match peer_ref {
+            Some(peer_ref) => {
+                let peer_selection = ForumTopicSelection {
+                    peer_ref,
+                    forum_topics: Vec::new(),
+                    messages: None,
+                };
+                Ok(StateMachine(peer_selection))
+            }
+            None => Err(anyhow::Error::msg("Peer Cannot be None")),
+        }
+    }
+}
+
+impl TryFrom<StateMachine<ForumTopicSelection>> for StateMachine<FileSelection> {
+    type Error = anyhow::Error;
+    fn try_from(value: StateMachine<ForumTopicSelection>) -> Result<Self> {
+        let StateMachine(inner) = value;
+        let ForumTopicSelection {
+            forum_topics,
+            messages,
+            ..
+        } = inner;
+
+        let inner = match messages {
+            Some(messages) => FileSelection {
+                forum_topics,
+                messages,
+            },
+            None => return Err(anyhow::Error::msg("Messages cannot be empty")),
+        };
+
+        Ok(StateMachine(inner))
+    }
+}
+
+impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
+    type Error = anyhow::Error;
+    fn try_from(value: StateMachine<FileSelection>) -> Result<Self> {
+        let StateMachine(inner) = value;
+        let FileSelection { messages, .. } = inner;
+
+        let medias = messages
+            .iter()
+            .filter(|message| message.media().is_some())
+            .map(|message| message.media().unwrap())
+            .collect();
+
+        let download = DownloadState { medias };
+
+        Ok(StateMachine(download))
+    }
+}
+
+impl TryFrom<StateMachine<DownloadState>> for StateMachine<DownloadProgress> {
+    type Error = anyhow::Error;
+    fn try_from(value: StateMachine<DownloadState>) -> Result<Self> {
+        Ok(StateMachine(DownloadProgress::InProgress))
+    }
+}
+
 pub enum StateWrapper {
-    Init(StateMachine<InitState>),
-    Auth(AuthState),
     PeerSelection(StateMachine<PeerSelection>),
     ForumTopicSelection(StateMachine<ForumTopicSelection>),
     FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
-    Done,
+    Progress(StateMachine<DownloadProgress>),
+}
+
+impl StateWrapper {
+    pub fn step(self) -> Result<Option<StateWrapper>> {
+        use StateWrapper::*;
+        let next = match self {
+            PeerSelection(state) => ForumTopicSelection(state.try_into()?),
+            ForumTopicSelection(state) => FileSelection(state.try_into()?),
+            FileSelection(state) => Download(state.try_into()?),
+            Download(state) => Progress(state.try_into()?),
+            Progress(state) => {
+                let StateMachine(progress) = state;
+                match progress {
+                    DownloadProgress::InProgress => {
+                        Progress(StateMachine(DownloadProgress::InProgress))
+                    }
+                    DownloadProgress::Finished => return Ok(None),
+                }
+            }
+        };
+
+        Ok(Some(next))
+    }
+}
+
+impl Default for StateWrapper {
+    fn default() -> Self {
+        Self::PeerSelection(StateMachine(PeerSelection::default()))
+    }
 }
 
 pub struct ForumTopicSelection {
     pub peer_ref: PeerRef,
+    pub forum_topics: Vec<ForumTopic>,
+    pub messages: Option<Vec<Message>>,
 }
 
-pub struct PeerSelection;
+#[derive(Default)]
+pub struct PeerSelection {
+    peer_ref: Option<PeerRef>,
+}
+
+pub enum DownloadProgress {
+    InProgress,
+    Finished,
+}
 
 pub struct FileSelection {
-    pub peer_ref: PeerRef,
     pub forum_topics: Vec<ForumTopic>,
+    pub messages: Vec<Message>,
 }
 
-pub enum AuthState {
-    PhoneNumber(StateMachine<AuthPhoneNumber>),
-    LoginCode(StateMachine<AuthLoginCode>),
-}
-
-pub struct InitState;
 pub struct DownloadState {
     medias: Vec<Media>,
 }
 
-pub struct AuthPhoneNumber {
-    pub phone: String,
+pub struct UnAuthenticated;
+
+#[derive(Default)]
+pub struct Authenticated {
+    state: StateWrapper,
 }
 
-pub struct AuthLoginToken {
-    pub login_token: LoginToken,
-}
-
-pub struct AuthLoginCode {
-    pub login_code: String,
-}
-
-pub struct Application {
+pub struct Application<S> {
     ctx: Arc<Context>,
-    state_wrapper: StateWrapper,
-    current_screen: CurrentScreen,
+    state: S,
 }
 
-impl Application {
+impl Application<Authenticated> {
     pub async fn new() -> Result<Self> {
         let ctx = Arc::new(Context::new().await?);
-
-        let (current_screen, state_wrapper) = if ctx.client.is_authorized().await? {
-            (
-                CurrentScreen::PeerSelectionScreen(PeerSelectionScreen::new(ctx.clone())),
-                StateWrapper::PeerSelection(StateMachine(PeerSelection)),
-            )
-        } else {
-            (
-                CurrentScreen::AuthScreen(AuthScreen::PhoneNumber(PhoneNumberScreen::new(
-                    ctx.clone(),
-                ))),
-                StateWrapper::Auth(AuthState::PhoneNumber(StateMachine(AuthPhoneNumber {
-                    phone: String::new(),
-                }))),
-            )
-        };
-        Ok(Self {
-            state_wrapper,
-            ctx,
-            current_screen,
-        })
+        let state = Authenticated::default();
+        Ok(Self { ctx, state })
     }
-}
 
-impl Application {
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<bool>
     where
         B::Error: Sync + Send + 'static,
     {
-        loop {
-            use StateWrapper::*;
-            terminal.draw(|f| self.current_screen.draw(f))?;
-
-            self.current_screen.tick().await?;
-
-            if event::poll(Duration::from_millis(16))? {
-                let event = event::read()?;
-
-                if let Some(transition) = self.current_screen.handle_event(&event).await? {
-                    let current_state = self.state_wrapper;
-                    match (current_state, &transition) {
-                        (
-                            Auth(AuthState::PhoneNumber(_phone)),
-                            Auth(AuthState::LoginCode(_login)),
-                        ) => {
-                            todo!()
-                        }
-                        (_, PeerSelection(_)) => {
-                            self.state_wrapper = transition;
-                            self.current_screen = CurrentScreen::PeerSelectionScreen(
-                                PeerSelectionScreen::new(self.ctx.clone()),
-                            );
-                        }
-                        (_, ForumTopicSelection(forum_topic)) => {
-                            let state = &forum_topic.0;
-
-                            let peer_ref = state.peer_ref.clone();
-                            let group_download =
-                                GroupDownloadScreen::new(self.ctx.clone(), peer_ref);
-                            let screen = CurrentScreen::DownloadScreen(DownloadScreen::Group(
-                                group_download,
-                            ));
-                            self.state_wrapper = transition;
-                            self.current_screen = screen;
-                        }
-                        (_, FileSelection(file_selection_state)) => {
-                            let state = &file_selection_state.0;
-                            let peer_ref = state.peer_ref.clone();
-                            let forum_topics = state.forum_topics.clone();
-                            let file_selection =
-                                FileSelectionScreen::new(self.ctx.clone(), peer_ref, forum_topics);
-                            let screen =
-                                CurrentScreen::DownloadScreen(DownloadScreen::File(file_selection));
-
-                            self.state_wrapper = transition;
-                            self.current_screen = screen;
-                        }
-                        (_, Download(download_state)) => {
-                            todo!()
-                        }
-                        (_, _) => todo!(),
-                    }
-                }
-
-                if let Event::Key(key) = event {
-                    match key.code {
-                        KeyCode::Esc => return Ok(true),
-                        _ => {}
-                    }
-                }
-            }
-        }
+        loop {}
     }
 }
 

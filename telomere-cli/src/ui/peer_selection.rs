@@ -181,6 +181,7 @@ impl Controller for PeerSelectionScreen {
                 KeyCode::Enter => {
                     let dialog = self.dialogs.get(current).unwrap();
                     let peer_ref = dialog.peer_ref();
+                    todo!()
                     return Ok(Some(StateWrapper::ForumTopicSelection(StateMachine(
                         ForumTopicSelection { peer_ref },
                     ))));
