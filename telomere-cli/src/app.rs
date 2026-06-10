@@ -7,10 +7,11 @@ use grammers_client::message::Message;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
-use grammers_tl_types::enums::FileHash;
+use grammers_tl_types::enums::{Dialog, FileHash};
 use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
+use ratatui::widgets::ListState;
 use ratatui::{Terminal, crossterm::event::Event};
 use std::env;
 use std::path::PathBuf;
@@ -24,18 +25,7 @@ pub struct StateMachine<S>(pub S);
 impl TryFrom<StateMachine<PeerSelection>> for StateMachine<ForumTopicSelection> {
     type Error = anyhow::Error;
     fn try_from(value: StateMachine<PeerSelection>) -> Result<Self> {
-        let peer_ref = value.0.peer_ref;
-        match peer_ref {
-            Some(peer_ref) => {
-                let peer_selection = ForumTopicSelection {
-                    peer_ref,
-                    forum_topics: Vec::new(),
-                    messages: None,
-                };
-                Ok(StateMachine(peer_selection))
-            }
-            None => Err(anyhow::Error::msg("Peer Cannot be None")),
-        }
+        todo!()
     }
 }
 
@@ -158,7 +148,8 @@ pub struct ForumTopicSelection {
 
 #[derive(Default)]
 pub struct PeerSelection {
-    peer_ref: Option<PeerRef>,
+    pub list_state: ListState,
+    pub dialogs: Vec<Dialog>,
 }
 
 pub enum DownloadProgress {
@@ -199,18 +190,8 @@ impl Application<Authenticated> {
         B::Error: Sync + Send + 'static,
     {
         loop {
-            use StateWrapper::*;
-            match self.state.state {
-                PeerSelection(ref _peer_selection) => {
-                    let ui_state = UIPeerSelectionState::new(self.ctx.clone());
-                    let ui = TerminalUserInterface::new();
-                    let controller = TerminalController::new();
-                    let ticker = TerminalTicker::new();
-
-                    (ui_state, ui, controller, ticker)
-                }
-                _ => todo!(),
-            };
+            let mut tui = TerminalUserInterface::new(self.ctx.clone());
+            terminal.draw(|f| f.render_stateful_widget(tui, area, &mut self.state.state));
         }
     }
 }

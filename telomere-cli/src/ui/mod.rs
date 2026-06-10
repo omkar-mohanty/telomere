@@ -5,6 +5,7 @@ use anyhow::{Ok, Result};
 use grammers_client::{Client, peer::Dialog};
 
 use grammers_session::types::PeerRef;
+use grammers_tl_types::Serializable;
 use grammers_tl_types::types::ForumTopic;
 use grammers_tl_types::{enums::messages::ForumTopics, functions::messages::GetForumTopics};
 use ratatui::{
@@ -17,12 +18,7 @@ use tokio::task::JoinSet;
 
 pub trait Controller {
     type State;
-    type AppState;
-    fn handle(
-        &self,
-        event: Event,
-        state: &mut Self::State,
-    ) -> Result<Option<StateMachine<Self::AppState>>>;
+    fn handle(&self, event: Event, state: &mut Self::State) -> Result<Option<StateWrapper>>;
 }
 
 pub trait Tick {
@@ -30,7 +26,57 @@ pub trait Tick {
     async fn tick(&mut self, state: &mut Self::State) -> Result<()>;
 }
 
-pub struct TerminalUserInterface;
+pub struct TerminalUserInterface {
+    ctx: Arc<Context>,
+}
+
+impl TerminalUserInterface {
+    pub fn new(ctx: Arc<Context>) -> Self {
+        Self { ctx }
+    }
+}
+
+struct PeerSelectionUI;
+
+impl StatefulWidget for PeerSelectionUI {
+    type State = PeerSelection;
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        if state.dialogs.is_empty() {
+            Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.")
+                .block(
+                    Block::default()
+                        .title(" Dialogs ")
+                        .borders(Borders::ALL)
+                        .fg(Color::White),
+                )
+                .render(area, buf);
+        } else {
+            let items: Vec<ListItem> = state
+                .dialogs
+                .iter()
+                .map(|dialog| {
+                    let name = dialog.peer().name().unwrap_or("Unknown Chat");
+                    ListItem::new(name)
+                })
+                .collect();
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" Dialogs ")
+                        .borders(Borders::ALL)
+                        .fg(Color::White),
+                )
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▶ ");
+            StatefulWidget::render(list, area, buf, &mut state.list_state);
+        }
+    }
+}
 
 pub struct TerminalController;
 
@@ -69,62 +115,23 @@ impl UIPeerSelectionState {
 }
 
 impl TerminalUserInterface {
-    fn render_loading_peers(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.")
-            .block(
-                Block::default()
-                    .title(" Dialogs ")
-                    .borders(Borders::ALL)
-                    .fg(Color::White),
-            )
-            .render(area, buf);
-    }
+    fn render_loading_peers(&self, area: Rect, buf: &mut Buffer) {}
 }
 
 impl StatefulWidget for TerminalUserInterface {
-    type State = UIPeerSelectionState;
+    type State = StateWrapper;
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        if state.dialogs.is_empty() {
-            self.render_loading_peers(area, buf);
-        } else {
-            let items: Vec<ListItem> = state
-                .dialogs
-                .iter()
-                .map(|dialog| {
-                    let name = dialog.peer().name().unwrap_or("Unknown Chat");
-                    ListItem::new(name)
-                })
-                .collect();
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(" Dialogs ")
-                        .borders(Borders::ALL)
-                        .fg(Color::White),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("▶ ");
-            StatefulWidget::render(list, area, buf, &mut state.list_state);
+        match state {
+            StateWrapper::PeerSelection(state) => {
+                let f = PeerSelectionUI;
+            }
+            _ => todo!(),
         }
     }
 }
 
-impl TerminalController<PeerSelection> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl Controller for TerminalController<PeerSelection> {
-    type State = UIPeerSelectionState;
-    type AppState = ForumTopicSelection;
+impl Controller for TerminalController {
+    type State = StateWrapper;
 
     fn handle(
         &self,
