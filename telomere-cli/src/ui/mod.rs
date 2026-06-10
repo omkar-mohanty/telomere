@@ -2,7 +2,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper};
 use anyhow::{Ok, Result};
-use grammers_client::{Client, peer::Dialog};
+use grammers_client::{Client, peer::Dialog, peer::Peer};
 
 use grammers_session::types::PeerRef;
 use grammers_tl_types::Serializable;
@@ -114,16 +114,13 @@ impl UIPeerSelectionState {
     }
 }
 
-impl TerminalUserInterface {
-    fn render_loading_peers(&self, area: Rect, buf: &mut Buffer) {}
-}
-
 impl StatefulWidget for TerminalUserInterface {
     type State = StateWrapper;
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         match state {
             StateWrapper::PeerSelection(state) => {
                 let f = PeerSelectionUI;
+                f.render(area, buf, &mut state.0);
             }
             _ => todo!(),
         }
@@ -133,65 +130,19 @@ impl StatefulWidget for TerminalUserInterface {
 impl Controller for TerminalController {
     type State = StateWrapper;
 
-    fn handle(
-        &self,
-        event: Event,
-        state: &mut Self::State,
-    ) -> Result<Option<StateMachine<Self::AppState>>> {
-        let current = state.list_state.selected().unwrap_or(0);
-        if let Event::Key(key_event) = event {
-            match key_event.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let next = if current == 0 {
-                        state.dialogs.len() - 1
-                    } else {
-                        current - 1
-                    };
-
-                    state.list_state.select(Some(next));
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let next = if current >= state.dialogs.len() - 1 {
-                        0
-                    } else {
-                        current + 1
-                    };
-
-                    state.list_state.select(Some(next));
-                }
-                KeyCode::Enter => {
-                    let dialog = state.dialogs.get(current).unwrap();
-                    let peer_ref = dialog.peer_ref();
-                    let forum_topic_selection = ForumTopicSelection {
-                        peer_ref,
-                        forum_topics: Vec::new(),
-                        messages: None,
-                    };
-                    return Ok(Some(StateMachine(forum_topic_selection)));
-                }
-                _ => {}
-            }
-        }
-        Ok(None)
+    fn handle(&self, event: Event, state: &mut Self::State) -> Result<Option<StateWrapper>> {
+        todo!()
     }
 }
 
-impl Tick for TerminalTicker<PeerSelection> {
-    type State = UIPeerSelectionState;
+impl Tick for TerminalTicker {
+    type State = PeerSelection;
     async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
         while let Some(res) = state.join_set.try_join_next() {
             let res = res??;
             state.dialogs.extend(res);
         }
         Ok(())
-    }
-}
-
-impl TerminalTicker<PeerSelection> {
-    pub fn new() -> Self {
-        Self {
-            _phantom: PhantomData,
-        }
     }
 }
 
