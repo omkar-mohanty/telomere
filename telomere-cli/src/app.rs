@@ -17,10 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::ui::{
-    Controller, CurrentScreen, DownloadScreen, FileSelectionScreen, GroupDownloadScreen,
-    PeerSelectionScreen, Screen, Tick,
-};
+use crate::ui::{TerminalController, TerminalTicker, TerminalUserInterface, UIPeerSelectionState};
 
 pub struct StateMachine<S>(pub S);
 
@@ -84,8 +81,58 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
 
 impl TryFrom<StateMachine<DownloadState>> for StateMachine<DownloadProgress> {
     type Error = anyhow::Error;
-    fn try_from(value: StateMachine<DownloadState>) -> Result<Self> {
+    fn try_from(_value: StateMachine<DownloadState>) -> Result<Self> {
         Ok(StateMachine(DownloadProgress::InProgress))
+    }
+}
+
+impl TryFrom<StateMachine<PeerSelection>> for StateWrapper {
+    type Error = anyhow::Error;
+    fn try_from(value: StateMachine<PeerSelection>) -> Result<Self> {
+        Ok(StateWrapper::ForumTopicSelection(value.try_into()?))
+    }
+}
+
+impl TryFrom<StateMachine<ForumTopicSelection>> for StateWrapper {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StateMachine<ForumTopicSelection>) -> Result<Self> {
+        Ok(StateWrapper::FileSelection(value.try_into()?))
+    }
+}
+
+impl TryFrom<StateMachine<FileSelection>> for StateWrapper {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StateMachine<FileSelection>) -> Result<Self> {
+        Ok(StateWrapper::Download(value.try_into()?))
+    }
+}
+
+impl TryFrom<StateMachine<DownloadState>> for StateWrapper {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StateMachine<DownloadState>) -> Result<Self> {
+        Ok(StateWrapper::Progress(value.try_into()?))
+    }
+}
+
+impl TryFrom<StateMachine<DownloadProgress>> for StateWrapper {
+    type Error = anyhow::Error;
+
+    fn try_from(value: StateMachine<DownloadProgress>) -> Result<Self> {
+        let progress = value.0;
+
+        let res = match progress {
+            DownloadProgress::InProgress => {
+                StateWrapper::Progress(StateMachine(DownloadProgress::InProgress))
+            }
+            DownloadProgress::Finished => {
+                StateWrapper::Progress(StateMachine(DownloadProgress::Finished))
+            }
+        };
+
+        Ok(res)
     }
 }
 
@@ -95,29 +142,6 @@ pub enum StateWrapper {
     FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
     Progress(StateMachine<DownloadProgress>),
-}
-
-impl StateWrapper {
-    pub fn step(self) -> Result<Option<StateWrapper>> {
-        use StateWrapper::*;
-        let next = match self {
-            PeerSelection(state) => ForumTopicSelection(state.try_into()?),
-            ForumTopicSelection(state) => FileSelection(state.try_into()?),
-            FileSelection(state) => Download(state.try_into()?),
-            Download(state) => Progress(state.try_into()?),
-            Progress(state) => {
-                let StateMachine(progress) = state;
-                match progress {
-                    DownloadProgress::InProgress => {
-                        Progress(StateMachine(DownloadProgress::InProgress))
-                    }
-                    DownloadProgress::Finished => return Ok(None),
-                }
-            }
-        };
-
-        Ok(Some(next))
-    }
 }
 
 impl Default for StateWrapper {
@@ -174,7 +198,20 @@ impl Application<Authenticated> {
     where
         B::Error: Sync + Send + 'static,
     {
-        loop {}
+        loop {
+            use StateWrapper::*;
+            match self.state.state {
+                PeerSelection(ref _peer_selection) => {
+                    let ui_state = UIPeerSelectionState::new(self.ctx.clone());
+                    let ui = TerminalUserInterface::new();
+                    let controller = TerminalController::new();
+                    let ticker = TerminalTicker::new();
+
+                    (ui_state, ui, controller, ticker)
+                }
+                _ => todo!(),
+            };
+        }
     }
 }
 

@@ -1,13 +1,12 @@
-mod auth;
-mod download;
-mod peer_selection;
 use std::{marker::PhantomData, sync::Arc};
 
 use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper};
 use anyhow::{Ok, Result};
-pub use download::*;
-use grammers_client::peer::Dialog;
-pub use peer_selection::*;
+use grammers_client::{Client, peer::Dialog};
+
+use grammers_session::types::PeerRef;
+use grammers_tl_types::types::ForumTopic;
+use grammers_tl_types::{enums::messages::ForumTopics, functions::messages::GetForumTopics};
 use ratatui::{
     Frame,
     crossterm::event::{Event, KeyCode, KeyEvent},
@@ -16,11 +15,28 @@ use ratatui::{
 };
 use tokio::task::JoinSet;
 
-pub struct TerminalUserInterface<S> {
-    _phantom: PhantomData<S>,
+pub trait Controller {
+    type State;
+    type AppState;
+    fn handle(
+        &self,
+        event: Event,
+        state: &mut Self::State,
+    ) -> Result<Option<StateMachine<Self::AppState>>>;
 }
 
-struct UIPeerSelectionState {
+pub trait Tick {
+    type State;
+    async fn tick(&mut self, state: &mut Self::State) -> Result<()>;
+}
+
+pub struct TerminalUserInterface;
+
+pub struct TerminalController;
+
+pub struct TerminalTicker;
+
+pub struct UIPeerSelectionState {
     ctx: Arc<Context>,
     list_state: ListState,
     dialogs: Vec<Dialog>,
@@ -50,18 +66,9 @@ impl UIPeerSelectionState {
             join_set,
         }
     }
-
-    pub fn refresh(&mut self) -> Result<()> {
-        while let Some(joined_task) = self.join_set.try_join_next() {
-            let dialogs = joined_task??;
-            self.dialogs.extend(dialogs);
-        }
-
-        Ok(())
-    }
 }
 
-impl TerminalUserInterface<PeerSelection> {
+impl TerminalUserInterface {
     fn render_loading_peers(&self, area: Rect, buf: &mut Buffer) {
         Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.")
             .block(
@@ -72,50 +79,50 @@ impl TerminalUserInterface<PeerSelection> {
             )
             .render(area, buf);
     }
-
-    fn render_peers(&self, area: Rect, buf: &mut Buffer, state: &mut UIPeerSelectionState) {
-        let items: Vec<ListItem> = state
-            .dialogs
-            .iter()
-            .map(|dialog| {
-                let name = dialog.peer().name().unwrap_or("Unknown Chat");
-                ListItem::new(name)
-            })
-            .collect();
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(" Dialogs ")
-                    .borders(Borders::ALL)
-                    .fg(Color::White),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
-        StatefulWidget::render(list, area, buf, &mut state.list_state);
-    }
 }
 
-impl StatefulWidget for TerminalUserInterface<PeerSelection> {
+impl StatefulWidget for TerminalUserInterface {
     type State = UIPeerSelectionState;
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         if state.dialogs.is_empty() {
             self.render_loading_peers(area, buf);
         } else {
-            self.render_peers(area, buf, state);
+            let items: Vec<ListItem> = state
+                .dialogs
+                .iter()
+                .map(|dialog| {
+                    let name = dialog.peer().name().unwrap_or("Unknown Chat");
+                    ListItem::new(name)
+                })
+                .collect();
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" Dialogs ")
+                        .borders(Borders::ALL)
+                        .fg(Color::White),
+                )
+                .highlight_style(
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("▶ ");
+            StatefulWidget::render(list, area, buf, &mut state.list_state);
         }
     }
 }
 
-pub struct TerminalController<S> {
-    _phantom: PhantomData<S>,
+impl TerminalController<PeerSelection> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
 }
 
-impl Controller2 for TerminalController<PeerSelection> {
+impl Controller for TerminalController<PeerSelection> {
     type State = UIPeerSelectionState;
     type AppState = ForumTopicSelection;
 
@@ -148,8 +155,12 @@ impl Controller2 for TerminalController<PeerSelection> {
                 KeyCode::Enter => {
                     let dialog = state.dialogs.get(current).unwrap();
                     let peer_ref = dialog.peer_ref();
-                    let forum_topic_selection = ForumTopicSelection { peer_ref };
-                    todo!()
+                    let forum_topic_selection = ForumTopicSelection {
+                        peer_ref,
+                        forum_topics: Vec::new(),
+                        messages: None,
+                    };
+                    return Ok(Some(StateMachine(forum_topic_selection)));
                 }
                 _ => {}
             }
@@ -158,65 +169,80 @@ impl Controller2 for TerminalController<PeerSelection> {
     }
 }
 
-pub trait Controller2 {
-    type State;
-    type AppState;
-    fn handle(
-        &self,
-        event: Event,
-        state: &mut Self::State,
-    ) -> Result<Option<StateMachine<Self::AppState>>>;
-}
-
-pub trait Tick2 {
-    type State;
-    async fn tick(&mut self, state: &mut Self::State) -> Result<()>;
-}
-
-pub trait Tick {
-    async fn tick(&mut self) -> Result<()>;
-}
-
-pub trait Screen {
-    fn draw(&self, f: &mut Frame);
-}
-
-pub trait Controller {
-    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>>;
-}
-
-impl Screen for CurrentScreen {
-    fn draw(&self, f: &mut Frame) {
-        use CurrentScreen::*;
-        match self {
-            PeerSelectionScreen(page) => page.draw(f),
-            DownloadScreen(page) => page.draw(f),
-        }
-    }
-}
-
-impl Controller for CurrentScreen {
-    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
-        use CurrentScreen::*;
-        match self {
-            PeerSelectionScreen(page) => page.handle_event(&event).await,
-            DownloadScreen(page) => page.handle_event(&event).await,
-        }
-    }
-}
-
-impl Tick for CurrentScreen {
-    async fn tick(&mut self) -> Result<()> {
-        match self {
-            CurrentScreen::PeerSelectionScreen(screen) => screen.tick().await?,
-            CurrentScreen::DownloadScreen(screen) => screen.tick().await?,
-            _ => {}
+impl Tick for TerminalTicker<PeerSelection> {
+    type State = UIPeerSelectionState;
+    async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
+        while let Some(res) = state.join_set.try_join_next() {
+            let res = res??;
+            state.dialogs.extend(res);
         }
         Ok(())
     }
 }
 
-pub enum CurrentScreen {
-    PeerSelectionScreen(PeerSelectionScreen),
-    DownloadScreen(DownloadScreen),
+impl TerminalTicker<PeerSelection> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: PhantomData,
+        }
+    }
+}
+
+async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<Vec<ForumTopic>> {
+    let mut filtered_topics = Vec::new();
+
+    // Tracking markers for API pagination chunk offsets
+    let mut current_offset_date = 0;
+    let mut current_offset_id = 0;
+    let mut current_offset_topic = 0;
+
+    loop {
+        let forum_topic_res = client
+            .invoke(&GetForumTopics {
+                peer: peer.into(),
+                q: None,
+                offset_date: current_offset_date,
+                offset_id: current_offset_id,
+                offset_topic: current_offset_topic,
+                limit: 100, // Request healthy chunk page boundaries
+            })
+            .await?;
+
+        let ForumTopics::Topics(topics_payload) = forum_topic_res;
+
+        if topics_payload.topics.is_empty() {
+            break; // Reached the bottom of the group layout history
+        }
+
+        // Keep track of the last element's positions to pass into the next pagination step
+        let mut last_topic_id = None;
+
+        for topic in topics_payload.topics {
+            if let grammers_tl_types::enums::ForumTopic::Topic(t) = topic {
+                last_topic_id = Some(t.id);
+                filtered_topics.push(t);
+            }
+        }
+
+        // If your group has a total item count, you can also break early when match lengths line up
+        if filtered_topics.len() >= topics_payload.count as usize {
+            break;
+        }
+
+        // Update tracking markers based on the last processed element
+        if let Some(id) = last_topic_id {
+            // Adjust markers using payload fields to request subsequent records safely
+            current_offset_topic = id;
+
+            // Fallback safety to prevent infinite loops if values stall out
+            if let Some(last_item) = filtered_topics.last() {
+                current_offset_date = last_item.date;
+                current_offset_id = last_item.id; // Set relative to message reference bounds
+            }
+        } else {
+            break;
+        }
+    }
+
+    Ok(filtered_topics)
 }
