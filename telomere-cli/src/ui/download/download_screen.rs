@@ -22,7 +22,7 @@ use crate::{
     ui::{Controller, Screen, Tick},
 };
 
-pub struct DownloadScreen {
+pub struct DownloadProgressScreen {
     ctx: Arc<Context>,
     documents: Vec<Media>,
     selected_documents: HashSet<usize>,
@@ -42,59 +42,11 @@ fn get_thread_root_id(msg: &Message) -> Option<i32> {
     None
 }
 
-impl DownloadScreen {
+impl DownloadProgressScreen {
     pub fn new(ctx: Arc<Context>, peer_ref: PeerRef, forum_topics: Vec<ForumTopic>) -> Self {
         let client = ctx.client.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(50);
         let list_state = ListState::default();
-        let mut total_media = 0;
-        let mut added_media = 0;
-
-        tokio::spawn(async move {
-            log::info!("Fetching Media Files");
-            let mut message_iter = client.iter_messages(peer_ref);
-            let mut res = Vec::new();
-
-            loop {
-                match message_iter.next().await {
-                    Ok(Some(message)) => {
-                        if let Some(media) = message.media() {
-                            total_media += 1;
-                            let thread_id = get_thread_root_id(&message);
-                            if let Some(thread_id) = thread_id
-                                && forum_topics
-                                    .iter()
-                                    .any(|forum_topic| forum_topic.id == thread_id)
-                            {
-                                added_media += 1;
-                                res.push(media);
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        break;
-                    }
-                    Err(e) => {
-                        log::error!("Error Received when fetching media : {}", e);
-                        return Err(Error::from(e));
-                    }
-                }
-
-                if res.len() >= 50 {
-                    let send = std::mem::take(&mut res);
-                    let _ = tx.send(send).await;
-                }
-            }
-
-            log::info!("Total Media Received : {}", total_media);
-            log::info!("Total Media Filtered : {}", added_media);
-
-            if !res.is_empty() {
-                let _ = tx.send(res).await;
-            }
-
-            Ok::<(), Error>(())
-        });
 
         Self {
             ctx,
@@ -106,7 +58,7 @@ impl DownloadScreen {
     }
 }
 
-impl Controller for DownloadScreen {
+impl Controller for DownloadProgressScreen {
     async fn handle_event(
         &mut self,
         event: &Event,
@@ -140,13 +92,6 @@ impl Controller for DownloadScreen {
                         self.selected_documents.insert(current);
                     }
                 }
-                KeyCode::Char('S') => {
-                    if self.selected_documents.len() == self.documents.len() - 1 {
-                        self.selected_documents.drain();
-                    } else {
-                        self.selected_documents = (0..=self.documents.len() - 1).collect();
-                    }
-                }
                 KeyCode::Enter => {}
                 _ => {}
             }
@@ -155,7 +100,7 @@ impl Controller for DownloadScreen {
     }
 }
 
-impl Screen for DownloadScreen {
+impl Screen for DownloadProgressScreen {
     fn draw(&self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -258,7 +203,7 @@ impl Screen for DownloadScreen {
     }
 }
 
-impl Tick for DownloadScreen {
+impl Tick for DownloadProgressScreen {
     async fn tick(&mut self) -> anyhow::Result<()> {
         while let Ok(res) = self.rx.try_recv() {
             self.documents.extend(res);

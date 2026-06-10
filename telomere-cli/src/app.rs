@@ -2,6 +2,7 @@ use anyhow::Result;
 use directories::ProjectDirs;
 use grammers_client::Client;
 use grammers_client::client::LoginToken;
+use grammers_client::media::Media;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
@@ -48,7 +49,9 @@ pub enum AuthState {
 }
 
 pub struct InitState;
-pub struct DownloadState {}
+pub struct DownloadState {
+    medias: Vec<Media>,
+}
 
 pub struct AuthPhoneNumber {
     pub phone: String,
@@ -147,6 +150,9 @@ impl Application {
 
                             self.state_wrapper = transition;
                             self.current_screen = screen;
+                        }
+                        (_, Download(download_state)) => {
+                            todo!()
                         }
                         (_, _) => todo!(),
                     }

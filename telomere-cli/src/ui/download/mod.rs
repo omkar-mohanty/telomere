@@ -1,6 +1,7 @@
 mod download_screen;
 mod file_screen;
 
+pub use download_screen::*;
 pub use file_screen::*;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -8,8 +9,6 @@ use std::sync::Arc;
 use anyhow::{Error, Ok, Result};
 use grammers_client::Client;
 use grammers_session::types::PeerRef;
-use grammers_tl_types::enums::messages::ForumTopics;
-use grammers_tl_types::functions::messages::GetForumTopics;
 use grammers_tl_types::types::ForumTopic;
 use ratatui::widgets::ListState;
 use ratatui::{
@@ -31,6 +30,7 @@ use crate::{
 pub enum DownloadScreen {
     Group(GroupDownloadScreen),
     File(FileSelectionScreen),
+    DownloadScreenProgress(DownloadProgressScreen),
     Direct,
 }
 
@@ -40,6 +40,7 @@ impl Tick for DownloadScreen {
         match self {
             Group(screen) => screen.tick().await,
             File(screen) => screen.tick().await,
+            DownloadScreenProgress(screen) => screen.tick().await,
             Direct => todo!(),
         }
     }
@@ -51,6 +52,7 @@ impl Controller for DownloadScreen {
         match self {
             Group(group) => group.handle_event(event).await,
             File(screen) => screen.handle_event(event).await,
+            DownloadScreenProgress(screen) => screen.handle_event(event).await,
             Direct => todo!(),
         }
     }
@@ -62,6 +64,7 @@ impl Screen for DownloadScreen {
         match self {
             File(screen) => screen.draw(f),
             Group(screen) => screen.draw(f),
+            DownloadScreenProgress(screen) => screen.draw(f),
             Direct => todo!(),
         }
     }
@@ -85,11 +88,6 @@ impl GroupDownloadScreen {
         let peer_clone = peer_ref.clone();
         let list_state = ListState::default();
 
-        join_set.spawn(async move {
-            let res = get_forum_topics(&ctx_clone.client, &peer_clone).await?;
-            Ok::<Vec<ForumTopic>>(res)
-        });
-
         Self {
             ctx,
             peer_ref,
@@ -98,15 +96,6 @@ impl GroupDownloadScreen {
             selected_topics: HashSet::new(),
             forum_topics: Vec::new(),
         }
-    }
-
-    pub async fn refresh(&mut self) {
-        let ctx_clone = self.ctx.clone();
-        let peer_clone = self.peer_ref.clone();
-        self.join_set.spawn(async move {
-            let res = get_forum_topics(&ctx_clone.client, &peer_clone).await?;
-            Ok::<Vec<ForumTopic>>(res)
-        });
     }
 }
 
@@ -271,63 +260,4 @@ impl Controller for GroupDownloadScreen {
         }
         Ok(None)
     }
-}
-
-async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<Vec<ForumTopic>> {
-    let mut filtered_topics = Vec::new();
-
-    // Tracking markers for API pagination chunk offsets
-    let mut current_offset_date = 0;
-    let mut current_offset_id = 0;
-    let mut current_offset_topic = 0;
-
-    loop {
-        let forum_topic_res = client
-            .invoke(&GetForumTopics {
-                peer: peer.into(),
-                q: None,
-                offset_date: current_offset_date,
-                offset_id: current_offset_id,
-                offset_topic: current_offset_topic,
-                limit: 100, // Request healthy chunk page boundaries
-            })
-            .await?;
-
-        let ForumTopics::Topics(topics_payload) = forum_topic_res;
-
-        if topics_payload.topics.is_empty() {
-            break; // Reached the bottom of the group layout history
-        }
-
-        // Keep track of the last element's positions to pass into the next pagination step
-        let mut last_topic_id = None;
-
-        for topic in topics_payload.topics {
-            if let grammers_tl_types::enums::ForumTopic::Topic(t) = topic {
-                last_topic_id = Some(t.id);
-                filtered_topics.push(t);
-            }
-        }
-
-        // If your group has a total item count, you can also break early when match lengths line up
-        if filtered_topics.len() >= topics_payload.count as usize {
-            break;
-        }
-
-        // Update tracking markers based on the last processed element
-        if let Some(id) = last_topic_id {
-            // Adjust markers using payload fields to request subsequent records safely
-            current_offset_topic = id;
-
-            // Fallback safety to prevent infinite loops if values stall out
-            if let Some(last_item) = filtered_topics.last() {
-                current_offset_date = last_item.date;
-                current_offset_id = last_item.id; // Set relative to message reference bounds
-            }
-        } else {
-            break;
-        }
-    }
-
-    Ok(filtered_topics)
 }

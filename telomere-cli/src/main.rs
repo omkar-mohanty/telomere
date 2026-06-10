@@ -21,7 +21,6 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
-use telomere_core::downloader::DownlaoderBuilder;
 
 use crate::app::{Application, Context};
 
