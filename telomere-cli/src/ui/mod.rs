@@ -81,7 +81,7 @@ impl Controller for TerminalController {
                 let state = controller.handle(event, state)?;
 
                 match state {
-                    Some(state) => Some(state.try_into()?),
+                    Some(state) => Some(StateWrapper::try_from(state)?),
                     None => None,
                 }
             }
@@ -90,7 +90,7 @@ impl Controller for TerminalController {
                 let state = controller.handle(event, state)?;
 
                 match state {
-                    Some(state) => Some(state.try_into()?),
+                    Some(state) => Some(StateWrapper::try_from(state)?),
                     None => None,
                 }
             }

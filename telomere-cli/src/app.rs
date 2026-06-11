@@ -69,48 +69,32 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
     }
 }
 
-impl TryFrom<StateMachine<DownloadState>> for StateMachine<DownloadProgress> {
-    type Error = anyhow::Error;
-    fn try_from(_value: StateMachine<DownloadState>) -> Result<Self> {
-        Ok(StateMachine(DownloadProgress::InProgress))
+impl From<StateMachine<PeerSelection>> for StateWrapper {
+    fn from(value: StateMachine<PeerSelection>) -> Self {
+        StateWrapper::PeerSelection(value)
     }
 }
 
-impl TryFrom<StateMachine<PeerSelection>> for StateWrapper {
-    type Error = anyhow::Error;
-    fn try_from(value: StateMachine<PeerSelection>) -> Result<Self> {
-        Ok(StateWrapper::ForumTopicSelection(value.try_into()?))
+impl From<StateMachine<ForumTopicSelection>> for StateWrapper {
+    fn from(value: StateMachine<ForumTopicSelection>) -> Self {
+        StateWrapper::ForumTopicSelection(value)
     }
 }
 
-impl TryFrom<StateMachine<ForumTopicSelection>> for StateWrapper {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StateMachine<ForumTopicSelection>) -> Result<Self> {
-        Ok(StateWrapper::FileSelection(value.try_into()?))
+impl From<StateMachine<FileSelection>> for StateWrapper {
+    fn from(value: StateMachine<FileSelection>) -> Self {
+        StateWrapper::FileSelection(value)
     }
 }
 
-impl TryFrom<StateMachine<FileSelection>> for StateWrapper {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StateMachine<FileSelection>) -> Result<Self> {
-        Ok(StateWrapper::Download(value.try_into()?))
+impl From<StateMachine<DownloadState>> for StateWrapper {
+    fn from(value: StateMachine<DownloadState>) -> Self {
+        StateWrapper::Download(value)
     }
 }
 
-impl TryFrom<StateMachine<DownloadState>> for StateWrapper {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StateMachine<DownloadState>) -> Result<Self> {
-        Ok(StateWrapper::Progress(value.try_into()?))
-    }
-}
-
-impl TryFrom<StateMachine<DownloadProgress>> for StateWrapper {
-    type Error = anyhow::Error;
-
-    fn try_from(value: StateMachine<DownloadProgress>) -> Result<Self> {
+impl From<StateMachine<DownloadProgress>> for StateWrapper {
+    fn from(value: StateMachine<DownloadProgress>) -> Self {
         let progress = value.0;
 
         let res = match progress {
@@ -122,7 +106,7 @@ impl TryFrom<StateMachine<DownloadProgress>> for StateWrapper {
             }
         };
 
-        Ok(res)
+        res
     }
 }
 
