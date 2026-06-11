@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
 
-use crate::app::Application;
+use crate::app::{Application, Config};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -30,45 +30,10 @@ pub enum AppMode {
 }
 
 #[derive(Parser)]
-#[command(name = "tg-dl")]
 #[command(about = "Telegram CLI & TUI Media Downloader", long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(Subcommand, Clone)]
-enum Command {
-    /// List all available Telegram peers/chats
-    List {
-        ///Filter by type e.g Groups, Channels, User
-        #[arg(short, long, value_enum)]
-        filter: PeerType,
-    },
-
-    Forum {
-        ///Name of the peer
-        name: String,
-    },
-
-    /// Download all media from a specific peer
-    Download {
-        /// The name or ID of the chat/peer
-        #[arg(short, long)]
-        name: String,
-
-        ///Destination Path
-        #[arg(short, long)]
-        path: PathBuf,
-
-        ///Number of downloads to do simultaneously. Recommened never to go above 2
-        #[arg(short, long)]
-        limit: usize,
-
-        ///Forum topic i.e Group or Channel to download from if applicable
-        #[arg(short, long)]
-        forum: Option<Vec<String>>,
-    },
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -83,10 +48,14 @@ async fn main() -> Result<()> {
 
     log::info!("Telomere media downloader initializing natively inside systemd!");
 
-    let app = Application::new().await?;
-
     let cli = Cli::parse();
+    let mut config = Config::default();
 
+    if let Some(path) = cli.output {
+        config.output = path;
+    }
+
+    let app = Application::new(config).await?;
     // setup terminal
     enable_raw_mode()?;
     let mut stderr = io::stderr(); // This is a special case. Normally using stdout is fine
@@ -94,11 +63,7 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stderr);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = if cli.command.is_none() {
-        app.run(&mut terminal).await
-    } else {
-        todo!()
-    };
+    let res = app.run(&mut terminal).await;
 
     disable_raw_mode()?;
     execute!(

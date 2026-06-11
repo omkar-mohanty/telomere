@@ -15,9 +15,10 @@ use tokio::sync::{
 use tokio::task::JoinSet;
 
 pub struct DownloadTask {
-    media: Media,
-    retries: Option<usize>,
-    filename: PathBuf,
+    pub media: Media,
+    pub retries: Option<usize>,
+    pub filename: String,
+    pub filepath: PathBuf,
 }
 
 pub struct Downloader {
@@ -69,7 +70,7 @@ impl DownloadTask {
             .create_new(true)
             .write(true)
             .truncate(true)
-            .open(&self.filename)
+            .open(&self.filepath)
             .await?;
         let mut total_downloaded = 0;
 
@@ -102,7 +103,7 @@ impl DownloadTask {
                                 total_retries += 1;
                                 log::info!(
                                     "Retrying Download for : {:?} Attempt : {}",
-                                    self.filename,
+                                    self.filepath,
                                     total_retries
                                 );
                                 stream = client.iter_download(&self.media);

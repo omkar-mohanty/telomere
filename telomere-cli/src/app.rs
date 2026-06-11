@@ -1,8 +1,8 @@
 use anyhow::{Error, Result};
-use directories::ProjectDirs;
+use directories::{ProjectDirs, UserDirs};
 use grammers_client::Client;
 use grammers_client::client::LoginToken;
-use grammers_client::media::Media;
+use grammers_client::media::{Downloadable, Media};
 use grammers_client::message::Message;
 use grammers_client::peer::Dialog;
 use grammers_mtsender::SenderPool;
@@ -12,12 +12,14 @@ use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::widgets::ListState;
 use ratatui::{Terminal, crossterm::event::Event};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use telomere_core::downloader::{DownloadEvent, DownloadTask, Downloader};
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 
 use crate::ui::{Controller, TerminalController, TerminalTicker, TerminalUserInterface, Tick};
 
@@ -123,9 +125,18 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
             .map(|(_, msg)| msg)
             .filter(|message| message.media().is_some())
             .map(|message| message.media().unwrap())
+            .map(|media| {
+                let filename = match &media {
+                    Media::Photo(p) => format!("photo_{}.jpg", p.id()),
+                    Media::Document(doc) => doc.name().unwrap_or("unknown_file").to_owned(),
+                    _ => panic!("Unsupported File Type"),
+                };
+
+                DownladbleFile { media, filename }
+            })
             .collect();
 
-        let download = DownloadState { medias };
+        let download = DownloadState { files: medias };
 
         Ok(StateMachine(download))
     }
@@ -161,23 +172,6 @@ impl From<StateMachine<DownloadState>> for StateWrapper {
     }
 }
 
-impl From<StateMachine<DownloadProgress>> for StateWrapper {
-    fn from(value: StateMachine<DownloadProgress>) -> Self {
-        let progress = value.0;
-
-        let res = match progress {
-            DownloadProgress::InProgress => {
-                StateWrapper::Progress(StateMachine(DownloadProgress::InProgress))
-            }
-            DownloadProgress::Finished => {
-                StateWrapper::Progress(StateMachine(DownloadProgress::Finished))
-            }
-        };
-
-        res
-    }
-}
-
 impl std::fmt::Display for StateWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use StateWrapper::*;
@@ -197,7 +191,7 @@ pub enum StateWrapper {
     ForumTopicSelection(StateMachine<ForumTopicSelection>),
     FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
-    Progress(StateMachine<DownloadProgress>),
+    InProgress(StateMachine<InProgressDownloadState>),
     Error(StateMachine<Error>),
 }
 
@@ -205,6 +199,12 @@ impl Default for StateWrapper {
     fn default() -> Self {
         Self::PeerSelection(StateMachine(PeerSelection::default()))
     }
+}
+
+#[derive(Debug)]
+pub struct DownladbleFile {
+    media: Media,
+    filename: String,
 }
 
 #[derive(Debug)]
@@ -222,12 +222,6 @@ pub struct PeerSelection {
 }
 
 #[derive(Debug)]
-pub enum DownloadProgress {
-    InProgress,
-    Finished,
-}
-
-#[derive(Debug)]
 pub struct FileSelection {
     pub dialog: Dialog,
     pub list_state: ListState,
@@ -236,9 +230,22 @@ pub struct FileSelection {
     pub messages: Vec<Message>,
 }
 
+pub type FileID = usize;
+
+pub struct FileEntry {
+    pub filename: String,
+    pub total_size: usize,
+    pub total_downloaded: usize,
+    pub rx: UnboundedReceiver<DownloadEvent>,
+}
+
+pub struct InProgressDownloadState {
+    files: Vec<FileEntry>,
+}
+
 #[derive(Debug)]
 pub struct DownloadState {
-    medias: Vec<Media>,
+    files: Vec<DownladbleFile>,
 }
 
 pub struct UnAuthenticated;
@@ -246,14 +253,40 @@ pub struct UnAuthenticated;
 pub struct Authenticated {
     ctx: Arc<Context>,
     state: StateWrapper,
+    config: Config,
+    downloader: Downloader,
 }
 
 impl Authenticated {
-    async fn new() -> Result<Self> {
+    async fn new(config: Config) -> Result<Self> {
+        let ctx = Arc::new(Context::new().await?);
+        let client = ctx.client.clone();
+        let limit = config.limit;
         Ok(Self {
             ctx: Arc::new(Context::new().await?),
             state: StateWrapper::default(),
+            config,
+            downloader: Downloader::new(client, limit),
         })
+    }
+}
+
+pub struct Config {
+    pub output: PathBuf,
+    pub limit: usize,
+    pub retries: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        let path = UserDirs::new().unwrap();
+        let output = path.download_dir().unwrap().to_owned();
+
+        Self {
+            output,
+            limit: 1,
+            retries: 1,
+        }
     }
 }
 
@@ -285,8 +318,8 @@ impl<S> DerefMut for Application<S> {
 }
 
 impl Application<Authenticated> {
-    pub async fn new() -> Result<Self> {
-        Ok(Self(Authenticated::new().await?))
+    pub async fn new(config: Config) -> Result<Self> {
+        Ok(Self(Authenticated::new(config).await?))
     }
 
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<bool>
@@ -306,6 +339,38 @@ impl Application<Authenticated> {
                 let event = event::read()?;
                 let prev_state = std::mem::take(&mut self.state);
                 self.state = match controller.handle(&event, prev_state) {
+                    Ok(StateWrapper::Download(download_state)) => {
+                        let StateMachine(inner) = download_state;
+                        let output_folder = self.config.output.clone();
+                        let retries = self.config.retries;
+
+                        let tasks = inner.files.into_iter().map(|file| {
+                            let filename = file.filename;
+                            let filepath = output_folder.join(&filename);
+                            DownloadTask {
+                                media: file.media,
+                                retries: Some(retries),
+                                filename,
+                                filepath,
+                            }
+                        });
+
+                        let mut files = Vec::new();
+
+                        for task in tasks {
+                            let filename = task.filename.clone();
+                            let total_size = task.media.size().unwrap_or(100);
+                            let rx = self.downloader.enqueue_task(task).await;
+
+                            files.push(FileEntry {
+                                filename,
+                                total_size,
+                                total_downloaded: 0,
+                                rx,
+                            });
+                        }
+                        StateWrapper::InProgress(StateMachine(InProgressDownloadState { files }))
+                    }
                     Ok(state) => state,
                     Err(e) => StateWrapper::from(e),
                 };

@@ -127,7 +127,6 @@ impl Controller for FileSelectionController {
                         state.selected_files.insert(current);
                     }
                 }
-                KeyCode::Char('S') => {}
                 KeyCode::Enter => {
                     let new_state = StateMachine::<DownloadState>::try_from(state)?;
                     return Ok(StateWrapper::from(new_state));

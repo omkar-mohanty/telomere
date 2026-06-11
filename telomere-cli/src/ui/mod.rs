@@ -1,3 +1,4 @@
+mod download;
 mod file_selection;
 mod forum_topic;
 mod peer_selection;
