@@ -1,95 +1,35 @@
-use crate::app::{Context, ForumTopicSelection, StateMachine, StateWrapper};
-use crate::ui::{Controller, Screen, Tick};
-use anyhow::{Error, Result};
+use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine};
+use crate::ui::{Controller, Tick};
+use anyhow::Result;
 use grammers_client::peer::Dialog;
 use ratatui::widgets::ListState;
-use ratatui::{
-    Frame,
-    crossterm::event::{Event, KeyCode},
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Modifier, Style, Stylize},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-};
+use std::collections::HashSet;
 use std::sync::Arc;
+
+use ratatui::{
+    crossterm::event::{Event, KeyCode},
+    prelude::*,
+    widgets::{Block, Borders, List, ListItem, Paragraph, StatefulWidget, Widget},
+};
 use tokio::task::JoinSet;
 
-type PeerSelectionResult = Result<Vec<Dialog>, Error>;
+pub struct PeerSelectionUI;
 
-pub struct PeerSelectionScreen {
-    pub ctx: Arc<Context>,
-    pub list_state: ListState,
-    pub dialogs: Vec<Dialog>,
-    pub join_set: JoinSet<PeerSelectionResult>,
-}
-
-impl PeerSelectionScreen {
-    pub fn new(ctx: Arc<Context>) -> Self {
-        let list_state = ListState::default();
-        let dialogs = Vec::new();
-        let mut iter_dialogs = ctx.client.iter_dialogs();
-        let mut join_set = JoinSet::new();
-
-        join_set.spawn(async move {
-            let mut dialogs = Vec::new();
-            while let Some(dialog) = iter_dialogs.next().await? {
-                dialogs.push(dialog);
-            }
-
-            Ok::<Vec<Dialog>, anyhow::Error>(dialogs)
-        });
-
-        Self {
-            ctx,
-            list_state,
-            dialogs,
-            join_set,
-        }
-    }
-}
-
-impl Screen for PeerSelectionScreen {
-    fn draw(&self, f: &mut Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Header bar
-                Constraint::Min(10),   // Main workspace
-                Constraint::Length(3), // Help/Status footer
-            ])
-            .split(f.area());
-
-        // 1. Header Widget
-        let header = Paragraph::new("🧬 TELOMERE Media Downloader")
-            .style(
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL).fg(Color::DarkGray));
-        f.render_widget(header, chunks[0]);
-
-        // 2. Core Workspace Layout (Split split Left/Right for info panels)
-        let workspace_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(40), // Left Pane: Chat List / Peers
-                Constraint::Percentage(60), // Right Pane: Tasks / Media / Details
-            ])
-            .split(chunks[1]);
-
-        // Left pane: show loading message or list of peers when ready
-        if self.dialogs.is_empty() {
-            let left_pane =
-                Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.").block(
+impl StatefulWidget for PeerSelectionUI {
+    type State = StateMachine<PeerSelection>;
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let state = &mut state.0;
+        if state.dialogs.is_empty() {
+            Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.")
+                .block(
                     Block::default()
                         .title(" Dialogs ")
                         .borders(Borders::ALL)
                         .fg(Color::White),
-                );
-            f.render_widget(left_pane, workspace_chunks[0]);
+                )
+                .render(area, buf);
         } else {
-            let items: Vec<ListItem> = self
+            let items: Vec<ListItem> = state
                 .dialogs
                 .iter()
                 .map(|dialog| {
@@ -111,84 +51,108 @@ impl Screen for PeerSelectionScreen {
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("▶ ");
-            let mut state = self.list_state.clone();
-            f.render_stateful_widget(list, workspace_chunks[0], &mut state);
+            StatefulWidget::render(list, area, buf, &mut state.list_state);
         }
+    }
+}
+pub struct PeerSelectionTicker {
+    join_set: JoinSet<Result<Vec<Dialog>>>,
+}
 
-        let right_pane = Paragraph::new(
-            "Select a dialog to inspect forum topics or manage active background media downloads.",
-        )
-        .block(
-            Block::default()
-                .title(" Operations Panel ")
-                .borders(Borders::ALL)
-                .fg(Color::White),
-        )
-        .wrap(Wrap { trim: true });
+impl PeerSelectionTicker {
+    pub fn new(ctx: Arc<Context>) -> Self {
+        let mut join_set = JoinSet::new();
 
-        // Right pane
-        f.render_widget(right_pane, workspace_chunks[1]);
+        join_set.spawn(async move {
+            let mut dialogs = Vec::new();
+            let client = &ctx.client;
+            let mut stream = client.iter_dialogs();
 
-        // 3. Footer Widget
-        let footer_text = "Quit: [Ctrl+C] or [Esc] | Toggle View: [Tab]";
-        let footer = Paragraph::new(footer_text)
-            .style(Style::default().fg(Color::Gray))
-            .alignment(Alignment::Left)
-            .block(Block::default().borders(Borders::ALL).fg(Color::DarkGray));
-        f.render_widget(footer, chunks[2]);
+            loop {
+                let res = stream.next().await;
+
+                match res {
+                    Ok(Some(dialog)) => {
+                        log::info!("Recived Dialog");
+                        dialogs.push(dialog);
+                    }
+                    Ok(None) => {
+                        log::info!("End of Dialog Stream");
+                        break;
+                    }
+                    Err(e) => {
+                        log::error!("{}", e);
+                        break;
+                    }
+                }
+            }
+
+            Ok::<Vec<Dialog>, anyhow::Error>(dialogs)
+        });
+
+        PeerSelectionTicker { join_set }
     }
 }
 
-impl Tick for PeerSelectionScreen {
-    async fn tick(&mut self) -> Result<()> {
-        while let Some(joined_task) = self.join_set.try_join_next() {
-            let dialogs = joined_task??;
-            self.dialogs.extend(dialogs);
-        }
+pub struct PeerSelectionController;
 
-        Ok(())
-    }
-}
-
-impl Controller for PeerSelectionScreen {
-    async fn handle_event(&mut self, event: &Event) -> Result<Option<StateWrapper>> {
+impl Controller for PeerSelectionController {
+    type State = StateMachine<PeerSelection>;
+    type Output = StateMachine<ForumTopicSelection>;
+    fn handle(&self, event: &Event, state: &mut Self::State) -> Result<Option<Self::Output>> {
+        let state = &mut state.0;
         if let Event::Key(key) = event {
-            if self.dialogs.is_empty() {
+            if state.dialogs.is_empty() {
                 return Ok(None);
             }
 
-            let current = self.list_state.selected().unwrap_or(0);
+            let current = state.list_state.selected().unwrap_or(0);
 
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     let next = if current == 0 {
-                        self.dialogs.len() - 1
+                        state.dialogs.len() - 1
                     } else {
                         current - 1
                     };
 
-                    self.list_state.select(Some(next));
+                    state.list_state.select(Some(next));
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let next = if current >= self.dialogs.len() - 1 {
+                    let next = if current >= state.dialogs.len() - 1 {
                         0
                     } else {
                         current + 1
                     };
 
-                    self.list_state.select(Some(next));
+                    state.list_state.select(Some(next));
                 }
                 KeyCode::Enter => {
-                    let dialog = self.dialogs.get(current).unwrap();
-                    let peer_ref = dialog.peer_ref();
-                    todo!()
-                    return Ok(Some(StateWrapper::ForumTopicSelection(StateMachine(
-                        ForumTopicSelection { peer_ref },
-                    ))));
+                    let dialog = state.dialogs.swap_remove(current);
+                    let res = StateMachine(ForumTopicSelection {
+                        dialog,
+                        forum_topics: Vec::new(),
+                        selected_topics: HashSet::default(),
+                        messages: None,
+                        list_state: ListState::default(),
+                    });
+
+                    return Ok(Some(res));
                 }
                 _ => {}
             }
         }
         Ok(None)
+    }
+}
+
+impl Tick for PeerSelectionTicker {
+    type State = PeerSelection;
+    async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
+        while let Some(res) = self.join_set.try_join_next() {
+            let res = res??;
+            state.dialogs.extend(res);
+        }
+        Ok(())
     }
 }

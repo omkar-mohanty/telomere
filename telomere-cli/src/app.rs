@@ -7,19 +7,18 @@ use grammers_client::message::Message;
 use grammers_client::peer::Dialog;
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
-use grammers_session::types::PeerRef;
-use grammers_tl_types::enums::FileHash;
 use grammers_tl_types::types::ForumTopic;
 use ratatui::crossterm::event::{self, KeyCode};
 use ratatui::prelude::Backend;
 use ratatui::widgets::ListState;
 use ratatui::{Terminal, crossterm::event::Event};
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::ui::{TerminalController, TerminalTicker, TerminalUserInterface, UIPeerSelectionState};
+use crate::ui::{Controller, TerminalController, TerminalTicker, TerminalUserInterface, Tick};
 
 pub struct StateMachine<S>(pub S);
 
@@ -142,7 +141,9 @@ impl Default for StateWrapper {
 }
 
 pub struct ForumTopicSelection {
-    pub peer_ref: PeerRef,
+    pub dialog: Dialog,
+    pub list_state: ListState,
+    pub selected_topics: HashSet<usize>,
     pub forum_topics: Vec<ForumTopic>,
     pub messages: Option<Vec<Message>>,
 }
@@ -190,9 +191,25 @@ impl Application<Authenticated> {
     where
         B::Error: Sync + Send + 'static,
     {
+        let mut ticker = TerminalTicker::new(self.ctx.clone());
+
+        let controller = TerminalController;
         loop {
-            let mut tui = TerminalUserInterface::new(self.ctx.clone());
-            terminal.draw(|f| f.render_stateful_widget(tui, area, &mut self.state.state));
+            let tui = TerminalUserInterface::new(self.ctx.clone());
+            terminal.draw(|f| f.render_stateful_widget(tui, f.area(), &mut self.state.state))?;
+
+            ticker.tick(&mut self.state.state).await?;
+
+            if event::poll(Duration::from_millis(16))? {
+                let event = event::read()?;
+                controller.handle(&event, &mut self.state.state)?;
+                if let Event::Key(key_event) = event {
+                    match key_event.code {
+                        KeyCode::Esc => return Ok(true),
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 }
