@@ -38,7 +38,6 @@ impl FileSelectionTicker {
         let mut added_media = 0;
 
         tokio::spawn(async move {
-            log::info!("Fetching Media Files");
             let mut message_iter = client.iter_messages(peer_ref);
 
             loop {
@@ -154,8 +153,6 @@ impl StatefulWidget for FileSelectionScreenUI {
             // Render loading screen to the entire area
             Widget::render(loading, area, buf);
         } else {
-            log::info!("Inside List Rendering. Count: {}", state.messages.len());
-
             let items: Vec<ListItem> = state
                 .messages
                 .iter()

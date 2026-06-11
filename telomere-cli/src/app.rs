@@ -306,10 +306,7 @@ impl Application<Authenticated> {
                 let event = event::read()?;
                 let prev_state = std::mem::take(&mut self.state);
                 self.state = match controller.handle(&event, prev_state) {
-                    Ok(state) => {
-                        log::info!("Current State : {}", state);
-                        state
-                    }
+                    Ok(state) => state,
                     Err(e) => StateWrapper::from(e),
                 };
                 if let Event::Key(key_event) = event {
