@@ -110,10 +110,17 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
     type Error = anyhow::Error;
     fn try_from(value: StateMachine<FileSelection>) -> Result<Self> {
         let StateMachine(inner) = value;
-        let FileSelection { messages, .. } = inner;
+        let FileSelection {
+            messages,
+            selected_files,
+            ..
+        } = inner;
 
         let medias = messages
             .iter()
+            .enumerate()
+            .filter(|(index, _)| selected_files.contains(&index))
+            .map(|(_, msg)| msg)
             .filter(|message| message.media().is_some())
             .map(|message| message.media().unwrap())
             .collect();

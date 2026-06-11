@@ -2,11 +2,6 @@ mod app;
 mod ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use grammers_client::Client;
-use grammers_session::types::PeerRef;
-use grammers_tl_types::enums::ForumTopic;
-use grammers_tl_types::enums::messages::ForumTopics;
-use grammers_tl_types::functions::messages::GetForumTopics;
 use log::LevelFilter;
 use ratatui::Terminal;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -15,7 +10,6 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::prelude::CrosstermBackend;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
@@ -75,31 +69,6 @@ enum Command {
         #[arg(short, long)]
         forum: Option<Vec<String>>,
     },
-}
-
-async fn get_forum_topics(client: &Client, peer: &PeerRef) -> Result<HashMap<i32, ForumTopic>> {
-    let mut filtered_topics = HashMap::new();
-
-    let forum_topic_res = client
-        .invoke(&GetForumTopics {
-            peer: peer.into(),
-            q: None,
-            offset_date: 0,
-            offset_id: 0,
-            offset_topic: 0,
-            limit: 0,
-        })
-        .await?;
-    let topics = {
-        let ForumTopics::Topics(topics) = forum_topic_res;
-        topics.topics
-    };
-
-    for topic in topics {
-        filtered_topics.insert(topic.id(), topic);
-    }
-
-    Ok(filtered_topics)
 }
 
 #[tokio::main]

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Error, Result};
+use grammers_client::media::Media;
 use grammers_client::message::Message;
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::MessageReplyHeader;
@@ -10,11 +11,12 @@ use ratatui::{
     crossterm::event::{Event, KeyCode},
     prelude::*,
     style::{Color, Modifier, Style, Stylize},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::app::{FileSelection, StateMachine, StateWrapper};
+use crate::app::{DownloadState, FileSelection, StateMachine, StateWrapper};
 use crate::{
     app::Context,
     ui::{Controller, Tick},
@@ -51,7 +53,9 @@ impl FileSelectionTicker {
                                     .any(|forum_topic| forum_topic.id == thread_id)
                             {
                                 added_media += 1;
-                                let _ = tx.send(message);
+                                if let Err(e) = tx.send(message).await {
+                                    log::error!("Error while Sending ! : {}", e);
+                                }
                             }
                         }
                     }
@@ -78,8 +82,14 @@ impl FileSelectionTicker {
 impl Tick for FileSelectionTicker {
     type State = StateMachine<FileSelection>;
     async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
-        while let Ok(res) = self.rx.try_recv() {
-            state.messages.push(res);
+        if !self.rx.is_closed() {
+            match self.rx.try_recv() {
+                Ok(res) => state.messages.push(res),
+                Err(TryRecvError::Disconnected) => {
+                    return Err(anyhow::Error::from(TryRecvError::Disconnected));
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -119,7 +129,10 @@ impl Controller for FileSelectionController {
                     }
                 }
                 KeyCode::Char('S') => {}
-                KeyCode::Enter => {}
+                KeyCode::Enter => {
+                    let new_state = StateMachine::<DownloadState>::try_from(state)?;
+                    return Ok(StateWrapper::from(new_state));
+                }
                 _ => {}
             }
         }
@@ -147,17 +160,21 @@ impl StatefulWidget for FileSelectionScreenUI {
                 .messages
                 .iter()
                 .filter(|msg| msg.media().is_some())
+                .filter_map(|msg| {
+                    let media = msg.media().unwrap();
+                    match media {
+                        Media::Document(doc) => {
+                            let name = doc.name().unwrap_or("unknown_file").to_owned();
+                            Some(name)
+                        }
+                        Media::Photo(p) => Some(format!("photo_{}.jpg", p.id()).to_owned()),
+                        _ => None,
+                    }
+                })
                 .enumerate()
-                .map(|(index, msg)| {
+                .map(|(index, title)| {
                     let is_selected = state.selected_files.contains(&index);
 
-                    // Fallback if msg.text() is empty
-                    let mut title = msg.text().to_owned();
-                    if title.is_empty() {
-                        title = format!("Media File #{}", index + 1);
-                    }
-
-                    // Apply green style + [X] if selected, default style + [ ] otherwise
                     if is_selected {
                         ListItem::new(format!("[X] {}", title)).fg(Color::Green)
                     } else {
