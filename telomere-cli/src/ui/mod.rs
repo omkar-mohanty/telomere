@@ -2,8 +2,9 @@ mod file_selection;
 mod forum_topic;
 mod peer_selection;
 
-use crate::app::{Context, ForumTopicSelection, StateWrapper};
+use crate::app::{Context, StateWrapper};
 use anyhow::Result;
+use file_selection::*;
 use forum_topic::*;
 use peer_selection::*;
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use ratatui::{crossterm::event::Event, prelude::*, widgets::StatefulWidget};
 pub trait Controller {
     type State;
     type Output;
-    fn handle(&self, event: &Event, state: &mut Self::State) -> Result<Option<Self::Output>>;
+    fn handle(&self, event: &Event, state: Self::State) -> Result<Self::Output>;
 }
 
 pub trait Tick {
@@ -21,21 +22,14 @@ pub trait Tick {
     async fn tick(&mut self, state: &mut Self::State) -> Result<()>;
 }
 
-pub struct TerminalUserInterface {
-    ctx: Arc<Context>,
-}
-
-impl TerminalUserInterface {
-    pub fn new(ctx: Arc<Context>) -> Self {
-        Self { ctx }
-    }
-}
+pub struct TerminalUserInterface;
 
 pub struct TerminalController;
 
 enum TickerState {
     PeerSelection(PeerSelectionTicker),
     ForumTopicSelection(ForumTopicTicker),
+    FileSelection(FileSelectionTicker),
 }
 
 pub struct TerminalTicker {
@@ -65,6 +59,10 @@ impl StatefulWidget for TerminalUserInterface {
                 let f = ForumTopicUI;
                 f.render(area, buf, state);
             }
+            StateWrapper::FileSelection(state) => {
+                let f = FileSelectionScreenUI;
+                f.render(area, buf, state);
+            }
             _ => todo!(),
         }
     }
@@ -73,26 +71,20 @@ impl StatefulWidget for TerminalUserInterface {
 impl Controller for TerminalController {
     type State = StateWrapper;
     type Output = StateWrapper;
-    fn handle(&self, event: &Event, state: &mut Self::State) -> Result<Option<StateWrapper>> {
+    fn handle(&self, event: &Event, state: Self::State) -> Result<StateWrapper> {
         use StateWrapper::*;
         let state = match state {
             PeerSelection(state) => {
                 let controller = PeerSelectionController;
-                let state = controller.handle(event, state)?;
-
-                match state {
-                    Some(state) => Some(StateWrapper::try_from(state)?),
-                    None => None,
-                }
+                controller.handle(event, state)?
             }
             ForumTopicSelection(state) => {
                 let controller = ForumTopicController;
-                let state = controller.handle(event, state)?;
-
-                match state {
-                    Some(state) => Some(StateWrapper::try_from(state)?),
-                    None => None,
-                }
+                controller.handle(event, state)?
+            }
+            FileSelection(state) => {
+                let controller = FileSelectionController;
+                controller.handle(event, state)?
             }
             _ => {
                 todo!()
@@ -109,12 +101,10 @@ impl Tick for TerminalTicker {
         use StateWrapper::*;
         match state {
             PeerSelection(peer_selection) => match &mut self.ticker_state {
-                TickerState::PeerSelection(peer_ticker) => {
-                    peer_ticker.tick(&mut peer_selection.0).await
-                }
+                TickerState::PeerSelection(peer_ticker) => peer_ticker.tick(peer_selection).await,
                 _ => {
                     let mut ticker = PeerSelectionTicker::new(self.ctx.clone());
-                    let res = ticker.tick(&mut peer_selection.0).await;
+                    let res = ticker.tick(peer_selection).await;
                     self.ticker_state = TickerState::PeerSelection(ticker);
                     res
                 }
@@ -123,22 +113,31 @@ impl Tick for TerminalTicker {
                 if let TickerState::ForumTopicSelection(forum_ticker) = &mut self.ticker_state {
                     forum_ticker.tick(state).await
                 } else {
-                    let peer = state.0.dialog.peer().to_ref().await;
+                    let peer = state.dialog.peer_ref();
 
-                    match peer {
-                        Some(peer) => {
-                            let mut ticker = ForumTopicTicker::new(self.ctx.clone(), peer);
-                            let res = ticker.tick(state).await;
-                            self.ticker_state = TickerState::ForumTopicSelection(ticker);
+                    let mut ticker = ForumTopicTicker::new(self.ctx.clone(), peer);
+                    let res = ticker.tick(state).await;
+                    self.ticker_state = TickerState::ForumTopicSelection(ticker);
 
-                            res
-                        }
-                        None => {
-                            anyhow::bail!("None Peer received")
-                        }
-                    }
+                    res
                 }
             }
+            FileSelection(state) => match &mut self.ticker_state {
+                TickerState::FileSelection(file_ticker) => file_ticker.tick(state).await,
+                _ => {
+                    let peer_ref = state.dialog.peer_ref();
+
+                    let mut ticker = FileSelectionTicker::new(
+                        self.ctx.clone(),
+                        peer_ref,
+                        state.forum_topics.clone(),
+                    );
+                    let res = ticker.tick(state).await;
+                    self.ticker_state = TickerState::FileSelection(ticker);
+
+                    res
+                }
+            },
             _ => {
                 todo!()
             }

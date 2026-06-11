@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Error, Result};
 use directories::ProjectDirs;
 use grammers_client::Client;
 use grammers_client::client::LoginToken;
@@ -14,18 +14,61 @@ use ratatui::widgets::ListState;
 use ratatui::{Terminal, crossterm::event::Event};
 use std::collections::HashSet;
 use std::env;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ui::{Controller, TerminalController, TerminalTicker, TerminalUserInterface, Tick};
 
-pub struct StateMachine<S>(pub S);
+#[derive(Debug)]
+pub struct StateMachine<S>(S);
+
+impl<S> Deref for StateMachine<S> {
+    type Target = S;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> DerefMut for StateMachine<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<S> AsMut<S> for StateMachine<S> {
+    fn as_mut(&mut self) -> &mut S {
+        &mut self.0
+    }
+}
+
+impl<S> AsRef<S> for StateMachine<S> {
+    fn as_ref(&self) -> &S {
+        &self.0
+    }
+}
 
 impl TryFrom<StateMachine<PeerSelection>> for StateMachine<ForumTopicSelection> {
     type Error = anyhow::Error;
     fn try_from(value: StateMachine<PeerSelection>) -> Result<Self> {
-        todo!()
+        let StateMachine(mut inner) = value;
+
+        if inner.list_state.selected().is_none() {
+            anyhow::bail!("No Peer is selected");
+        }
+
+        let selected = inner.list_state.selected().unwrap();
+        let dialog = inner.dialogs.swap_remove(selected);
+
+        let forum_topc = ForumTopicSelection {
+            dialog,
+            list_state: ListState::default(),
+            selected_topics: HashSet::default(),
+            forum_topics: Vec::new(),
+        };
+
+        Ok(StateMachine(forum_topc))
     }
 }
 
@@ -35,16 +78,28 @@ impl TryFrom<StateMachine<ForumTopicSelection>> for StateMachine<FileSelection> 
         let StateMachine(inner) = value;
         let ForumTopicSelection {
             forum_topics,
-            messages,
+            selected_topics,
+            dialog,
             ..
         } = inner;
 
-        let inner = match messages {
-            Some(messages) => FileSelection {
-                forum_topics,
-                messages,
-            },
-            None => return Err(anyhow::Error::msg("Messages cannot be empty")),
+        if selected_topics.is_empty() {
+            anyhow::bail!("Cannot Proceed with no forum topic selected!")
+        }
+
+        let forum_topics = forum_topics
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| selected_topics.contains(&index))
+            .map(|(_, topic)| topic)
+            .collect();
+
+        let inner = FileSelection {
+            dialog,
+            list_state: ListState::default(),
+            selected_files: HashSet::new(),
+            forum_topics,
+            messages: Vec::new(),
         };
 
         Ok(StateMachine(inner))
@@ -66,6 +121,12 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
         let download = DownloadState { medias };
 
         Ok(StateMachine(download))
+    }
+}
+
+impl From<Error> for StateWrapper {
+    fn from(value: Error) -> Self {
+        StateWrapper::Error(StateMachine(value))
     }
 }
 
@@ -110,12 +171,27 @@ impl From<StateMachine<DownloadProgress>> for StateWrapper {
     }
 }
 
+impl std::fmt::Display for StateWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use StateWrapper::*;
+        let str = match self {
+            PeerSelection(_) => "Peer Selection",
+            ForumTopicSelection(_) => "Forum Topic Selection",
+            FileSelection(_) => "File Selection",
+            Download(_) => "Download State",
+            _ => "Default",
+        };
+        f.write_str(str)
+    }
+}
+
 pub enum StateWrapper {
     PeerSelection(StateMachine<PeerSelection>),
     ForumTopicSelection(StateMachine<ForumTopicSelection>),
     FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
     Progress(StateMachine<DownloadProgress>),
+    Error(StateMachine<Error>),
 }
 
 impl Default for StateWrapper {
@@ -124,51 +200,86 @@ impl Default for StateWrapper {
     }
 }
 
+#[derive(Debug)]
 pub struct ForumTopicSelection {
     pub dialog: Dialog,
     pub list_state: ListState,
     pub selected_topics: HashSet<usize>,
     pub forum_topics: Vec<ForumTopic>,
-    pub messages: Option<Vec<Message>>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct PeerSelection {
     pub list_state: ListState,
     pub dialogs: Vec<Dialog>,
 }
 
+#[derive(Debug)]
 pub enum DownloadProgress {
     InProgress,
     Finished,
 }
 
+#[derive(Debug)]
 pub struct FileSelection {
+    pub dialog: Dialog,
+    pub list_state: ListState,
+    pub selected_files: HashSet<usize>,
     pub forum_topics: Vec<ForumTopic>,
     pub messages: Vec<Message>,
 }
 
+#[derive(Debug)]
 pub struct DownloadState {
     medias: Vec<Media>,
 }
 
 pub struct UnAuthenticated;
 
-#[derive(Default)]
 pub struct Authenticated {
+    ctx: Arc<Context>,
     state: StateWrapper,
 }
 
-pub struct Application<S> {
-    ctx: Arc<Context>,
-    state: S,
+impl Authenticated {
+    async fn new() -> Result<Self> {
+        Ok(Self {
+            ctx: Arc::new(Context::new().await?),
+            state: StateWrapper::default(),
+        })
+    }
+}
+
+pub struct Application<S>(S);
+
+impl<S> AsRef<S> for Application<S> {
+    fn as_ref(&self) -> &S {
+        &self.0
+    }
+}
+
+impl<S> AsMut<S> for Application<S> {
+    fn as_mut(&mut self) -> &mut S {
+        &mut self.0
+    }
+}
+
+impl<S> Deref for Application<S> {
+    type Target = S;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> DerefMut for Application<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl Application<Authenticated> {
     pub async fn new() -> Result<Self> {
-        let ctx = Arc::new(Context::new().await?);
-        let state = Authenticated::default();
-        Ok(Self { ctx, state })
+        Ok(Self(Authenticated::new().await?))
     }
 
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<bool>
@@ -179,14 +290,21 @@ impl Application<Authenticated> {
 
         let controller = TerminalController;
         loop {
-            let tui = TerminalUserInterface::new(self.ctx.clone());
-            terminal.draw(|f| f.render_stateful_widget(tui, f.area(), &mut self.state.state))?;
+            let tui = TerminalUserInterface;
+            terminal.draw(|f| f.render_stateful_widget(tui, f.area(), &mut self.state))?;
 
-            ticker.tick(&mut self.state.state).await?;
+            ticker.tick(&mut self.state).await?;
 
             if event::poll(Duration::from_millis(16))? {
                 let event = event::read()?;
-                controller.handle(&event, &mut self.state.state)?;
+                let prev_state = std::mem::take(&mut self.state);
+                self.state = match controller.handle(&event, prev_state) {
+                    Ok(state) => {
+                        log::info!("Current State : {}", state);
+                        state
+                    }
+                    Err(e) => StateWrapper::from(e),
+                };
                 if let Event::Key(key_event) = event {
                     match key_event.code {
                         KeyCode::Esc => return Ok(true),

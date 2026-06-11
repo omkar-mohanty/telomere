@@ -1,9 +1,7 @@
-use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine};
+use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper};
 use crate::ui::{Controller, Tick};
 use anyhow::Result;
 use grammers_client::peer::Dialog;
-use ratatui::widgets::ListState;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use ratatui::{
@@ -18,7 +16,6 @@ pub struct PeerSelectionUI;
 impl StatefulWidget for PeerSelectionUI {
     type State = StateMachine<PeerSelection>;
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let state = &mut state.0;
         if state.dialogs.is_empty() {
             Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.")
                 .block(
@@ -33,7 +30,7 @@ impl StatefulWidget for PeerSelectionUI {
                 .dialogs
                 .iter()
                 .map(|dialog| {
-                    let name = dialog.peer().name().unwrap_or("Unknown Chat");
+                    let name = dialog.peer().name().unwrap_or("Unknown Chat").to_owned();
                     ListItem::new(name)
                 })
                 .collect();
@@ -51,6 +48,7 @@ impl StatefulWidget for PeerSelectionUI {
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("▶ ");
+
             StatefulWidget::render(list, area, buf, &mut state.list_state);
         }
     }
@@ -73,11 +71,9 @@ impl PeerSelectionTicker {
 
                 match res {
                     Ok(Some(dialog)) => {
-                        log::info!("Recived Dialog");
                         dialogs.push(dialog);
                     }
                     Ok(None) => {
-                        log::info!("End of Dialog Stream");
                         break;
                     }
                     Err(e) => {
@@ -98,12 +94,11 @@ pub struct PeerSelectionController;
 
 impl Controller for PeerSelectionController {
     type State = StateMachine<PeerSelection>;
-    type Output = StateMachine<ForumTopicSelection>;
-    fn handle(&self, event: &Event, state: &mut Self::State) -> Result<Option<Self::Output>> {
-        let state = &mut state.0;
+    type Output = StateWrapper;
+    fn handle(&self, event: &Event, mut state: Self::State) -> Result<Self::Output> {
         if let Event::Key(key) = event {
             if state.dialogs.is_empty() {
-                return Ok(None);
+                return Ok(StateWrapper::from(state));
             }
 
             let current = state.list_state.selected().unwrap_or(0);
@@ -128,21 +123,14 @@ impl Controller for PeerSelectionController {
                     state.list_state.select(Some(next));
                 }
                 KeyCode::Enter => {
-                    let dialog = state.dialogs.swap_remove(current);
-                    let res = StateMachine(ForumTopicSelection {
-                        dialog,
-                        forum_topics: Vec::new(),
-                        selected_topics: HashSet::default(),
-                        messages: None,
-                        list_state: ListState::default(),
-                    });
-
-                    return Ok(Some(res));
+                    let new_state = StateMachine::<ForumTopicSelection>::try_from(state)?;
+                    let wrapper = StateWrapper::from(new_state);
+                    return Ok(wrapper);
                 }
                 _ => {}
             }
         }
-        Ok(None)
+        Ok(StateWrapper::from(state))
     }
 }
 

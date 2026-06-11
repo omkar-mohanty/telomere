@@ -3,7 +3,6 @@ mod ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use grammers_client::Client;
-use grammers_client::peer::{Channel, Dialog, Group, User};
 use grammers_session::types::PeerRef;
 use grammers_tl_types::enums::ForumTopic;
 use grammers_tl_types::enums::messages::ForumTopics;
@@ -17,12 +16,11 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::prelude::CrosstermBackend;
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::{env, io};
 use systemd_journal_logger::JournalLog;
 
-use crate::app::{Application, Context};
+use crate::app::Application;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum PeerType {
@@ -143,54 +141,4 @@ async fn main() -> Result<()> {
     res?;
 
     Ok(())
-}
-
-fn display_dialog(dialog: Dialog, filter: PeerType) {
-    use grammers_client::peer::Peer::*;
-    let peer = dialog.peer();
-    match peer {
-        User(user) => {
-            if filter == PeerType::Chat {
-                display_user(user);
-            }
-        }
-        Channel(channel) => {
-            if filter == PeerType::Channel {
-                display_channel(channel);
-            }
-        }
-        Group(group) => {
-            if filter == PeerType::Group {
-                display_group(group);
-            }
-        }
-    }
-}
-
-fn display_user(user: &User) {
-    println!("User : {}", user.full_name());
-}
-fn display_channel(channel: &Channel) {
-    println!("Channel : {}", channel.title());
-}
-fn display_group(group: &Group) {
-    println!(
-        "Group : {:?} | Username : {:?}",
-        group.title(),
-        group.username()
-    );
-}
-
-fn prompt(message: &str) -> Result<String> {
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
-    stdout.write_all(message.as_bytes())?;
-    stdout.flush()?;
-
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
-
-    let mut line = String::new();
-    stdin.read_line(&mut line)?;
-    Ok(line)
 }

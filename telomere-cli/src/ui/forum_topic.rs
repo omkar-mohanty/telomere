@@ -8,7 +8,7 @@ use grammers_tl_types::{enums::messages::ForumTopics, functions::messages::GetFo
 use ratatui::widgets::{StatefulWidget, Widget};
 use tokio::task::JoinSet;
 
-use crate::app::{Context, FileSelection, ForumTopicSelection, StateMachine};
+use crate::app::{Context, FileSelection, ForumTopicSelection, StateMachine, StateWrapper};
 use crate::ui::{Controller, Tick};
 use ratatui::{
     crossterm::event::{Event, KeyCode},
@@ -20,14 +20,13 @@ pub struct ForumTopicController;
 
 impl Controller for ForumTopicController {
     type State = StateMachine<ForumTopicSelection>;
-    type Output = StateMachine<FileSelection>;
+    type Output = StateWrapper;
 
     fn handle(
         &self,
         event: &ratatui::crossterm::event::Event,
-        state: &mut Self::State,
-    ) -> Result<Option<Self::Output>> {
-        let state = &mut state.0;
+        mut state: Self::State,
+    ) -> Result<Self::Output> {
         if let Event::Key(key) = event {
             let current = state.list_state.selected().unwrap_or(0);
 
@@ -57,19 +56,13 @@ impl Controller for ForumTopicController {
                     }
                 }
                 KeyCode::Enter => {
-                    let target_topics: Vec<ForumTopic> = state
-                        .forum_topics
-                        .iter()
-                        .enumerate()
-                        .filter(|(idx, _)| state.selected_topics.contains(&idx))
-                        .map(|(_, topic)| topic.clone())
-                        .collect();
-                    todo!()
+                    let state = StateMachine::<FileSelection>::try_from(state)?;
+                    return Ok(StateWrapper::from(state));
                 }
                 _ => {}
             }
         }
-        Ok(None)
+        Ok(StateWrapper::from(state))
     }
 }
 
@@ -93,7 +86,6 @@ impl ForumTopicTicker {
 impl Tick for ForumTopicTicker {
     type State = StateMachine<ForumTopicSelection>;
     async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
-        let state = &mut state.0;
         while let Some(res) = self.join_set.try_join_next() {
             let res = res??;
             state.forum_topics.extend(res);
@@ -113,10 +105,9 @@ impl StatefulWidget for ForumTopicUI {
         buf: &mut ratatui::prelude::Buffer,
         state: &mut Self::State,
     ) {
-        let state = &mut state.0;
         if state.forum_topics.is_empty() {
             let loading_pane =
-                Paragraph::new("🔄 Loading Telegram Dialogs/Peers...\nPress [Esc] to exit.").block(
+                Paragraph::new("🔄 Loading Forum Topics/Peers...\nPress [Esc] to exit.").block(
                     Block::default()
                         .title(" Dialogs ")
                         .borders(Borders::ALL)
