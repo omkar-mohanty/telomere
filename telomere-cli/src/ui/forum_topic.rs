@@ -89,6 +89,9 @@ impl Tick for ForumTopicTicker {
     async fn tick(&mut self, state: &mut Self::State) -> Result<()> {
         while let Some(res) = self.join_set.try_join_next() {
             let res = res??;
+            if res.len() == 0 {
+                anyhow::bail!("No Media Received Channel might be invalid?")
+            }
             state.forum_topics.extend(res);
         }
         Ok(())

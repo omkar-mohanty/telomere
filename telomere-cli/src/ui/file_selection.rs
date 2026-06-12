@@ -13,6 +13,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::task::JoinHandle;
 
 use crate::app::{ContextThreadSafe, DownloadState, FileSelection, StateMachine, StateWrapper};
 use crate::ui::{Controller, Tick};
@@ -23,6 +24,7 @@ pub struct FileSelectionController;
 
 pub struct FileSelectionTicker {
     rx: Receiver<Message>,
+    join_handle: JoinHandle<Result<()>>,
 }
 
 impl FileSelectionTicker {
@@ -31,7 +33,7 @@ impl FileSelectionTicker {
         let mut total_media = 0;
         let mut added_media = 0;
 
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             let client = ctx.read().await.client.clone();
             let mut message_iter = client.iter_messages(peer_ref);
 
@@ -69,7 +71,7 @@ impl FileSelectionTicker {
             Ok::<(), Error>(())
         });
 
-        Self { rx }
+        Self { rx, join_handle }
     }
 }
 
@@ -84,6 +86,10 @@ impl Tick for FileSelectionTicker {
                 }
                 _ => {}
             }
+        }
+
+        if self.join_handle.is_finished() && state.messages.is_empty() {
+            anyhow::bail!("No downloadable files received!")
         }
         Ok(())
     }

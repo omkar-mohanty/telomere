@@ -96,9 +96,16 @@ impl DownloadTask {
                             log::error!("RPC Error Floor Wait : {:?}", value);
                         }
                         RpcError {
-                            code: 400, value, ..
+                            code: 400,
+                            value,
+                            caused_by,
+                            name,
                         } => {
-                            log::error!("RPC Error File Ref Expired : {:?}", value);
+                            log::error!(
+                                "RPC Error File Ref Expired for file:{} : {:?}",
+                                self.filename,
+                                value
+                            );
                             if total_retries < self.retries {
                                 total_retries += 1;
                                 log::info!(
@@ -107,6 +114,18 @@ impl DownloadTask {
                                     total_retries
                                 );
                                 stream = client.iter_download(&self.media);
+                            } else {
+                                log::error!(
+                                    "Max Number Of Retries attempted for file: {}",
+                                    self.filename
+                                );
+                                let error = RpcError {
+                                    code: 400,
+                                    value: *value,
+                                    caused_by: *caused_by,
+                                    name: name.to_owned(),
+                                };
+                                let _ = tx.send(DownloadEvent::Error(error.into()));
                             }
                         }
                         _ => {

@@ -357,7 +357,10 @@ impl Application<Authenticated> {
             let tui = TerminalUserInterface;
             terminal.draw(|f| f.render_stateful_widget(tui, f.area(), &mut self.state))?;
 
-            ticker.tick(&mut self.state).await?;
+            if let Err(e) = ticker.tick(&mut self.state).await {
+                self.state = StateWrapper::from(e);
+                continue;
+            }
 
             if event::poll(Duration::from_millis(16))? {
                 let event = event::read()?;
