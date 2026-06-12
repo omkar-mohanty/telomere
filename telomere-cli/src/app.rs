@@ -18,8 +18,9 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use telomere_core::downloader::{DownloadEvent, DownloadTask, Downloader};
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use telomere_core::downloader::{DownloadEvent, Downloader};
+use tokio::sync::RwLock;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::ui::{Controller, TerminalController, TerminalTicker, TerminalUserInterface, Tick};
 
@@ -118,25 +119,35 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
             ..
         } = inner;
 
-        let medias = messages
+        let files = messages
             .iter()
             .enumerate()
             .filter(|(index, _)| selected_files.contains(&index))
             .map(|(_, msg)| msg)
             .filter(|message| message.media().is_some())
-            .map(|message| message.media().unwrap())
-            .map(|media| {
+            .map(|msg| (msg.id(), msg))
+            .map(|(id, message)| (id, message.media().unwrap()))
+            .map(|(id, media)| {
+                let size = media.size().unwrap_or(100);
                 let filename = match &media {
                     Media::Photo(p) => format!("photo_{}.jpg", p.id()),
                     Media::Document(doc) => doc.name().unwrap_or("unknown_file").to_owned(),
                     _ => panic!("Unsupported File Type"),
                 };
 
-                DownladbleFile { media, filename }
+                DownloadableFile {
+                    media,
+                    filename,
+                    id,
+                    size,
+                }
             })
             .collect();
 
-        let download = DownloadState { files: medias };
+        let download = DownloadState {
+            files,
+            queued_downloads: HashMap::new(),
+        };
 
         Ok(StateMachine(download))
     }
@@ -191,7 +202,6 @@ pub enum StateWrapper {
     ForumTopicSelection(StateMachine<ForumTopicSelection>),
     FileSelection(StateMachine<FileSelection>),
     Download(StateMachine<DownloadState>),
-    InProgress(StateMachine<InProgressDownloadState>),
     Error(StateMachine<Error>),
 }
 
@@ -202,9 +212,11 @@ impl Default for StateWrapper {
 }
 
 #[derive(Debug)]
-pub struct DownladbleFile {
-    media: Media,
-    filename: String,
+pub struct DownloadableFile {
+    pub media: Media,
+    pub filename: String,
+    pub size: usize,
+    pub id: i32,
 }
 
 #[derive(Debug)]
@@ -230,43 +242,42 @@ pub struct FileSelection {
     pub messages: Vec<Message>,
 }
 
-pub type FileID = usize;
+pub enum FileStatus {
+    InProgress,
+    Error(Error),
+    Finished,
+}
+
+impl Default for FileStatus {
+    fn default() -> Self {
+        Self::InProgress
+    }
+}
 
 pub struct FileEntry {
     pub filename: String,
     pub total_size: usize,
     pub total_downloaded: usize,
     pub rx: UnboundedReceiver<DownloadEvent>,
+    pub file_status: FileStatus,
 }
 
-pub struct InProgressDownloadState {
-    files: Vec<FileEntry>,
-}
-
-#[derive(Debug)]
 pub struct DownloadState {
-    files: Vec<DownladbleFile>,
+    pub files: Vec<DownloadableFile>,
+    pub queued_downloads: HashMap<i32, FileEntry>,
 }
-
-pub struct UnAuthenticated;
 
 pub struct Authenticated {
-    ctx: Arc<Context>,
+    ctx: Arc<RwLock<Context>>,
     state: StateWrapper,
-    config: Config,
-    downloader: Downloader,
 }
 
 impl Authenticated {
     async fn new(config: Config) -> Result<Self> {
-        let ctx = Arc::new(Context::new().await?);
-        let client = ctx.client.clone();
-        let limit = config.limit;
+        let ctx = Arc::new(RwLock::new(Context::new(config).await?));
         Ok(Self {
-            ctx: Arc::new(Context::new().await?),
+            ctx,
             state: StateWrapper::default(),
-            config,
-            downloader: Downloader::new(client, limit),
         })
     }
 }
@@ -339,38 +350,6 @@ impl Application<Authenticated> {
                 let event = event::read()?;
                 let prev_state = std::mem::take(&mut self.state);
                 self.state = match controller.handle(&event, prev_state) {
-                    Ok(StateWrapper::Download(download_state)) => {
-                        let StateMachine(inner) = download_state;
-                        let output_folder = self.config.output.clone();
-                        let retries = self.config.retries;
-
-                        let tasks = inner.files.into_iter().map(|file| {
-                            let filename = file.filename;
-                            let filepath = output_folder.join(&filename);
-                            DownloadTask {
-                                media: file.media,
-                                retries: Some(retries),
-                                filename,
-                                filepath,
-                            }
-                        });
-
-                        let mut files = Vec::new();
-
-                        for task in tasks {
-                            let filename = task.filename.clone();
-                            let total_size = task.media.size().unwrap_or(100);
-                            let rx = self.downloader.enqueue_task(task).await;
-
-                            files.push(FileEntry {
-                                filename,
-                                total_size,
-                                total_downloaded: 0,
-                                rx,
-                            });
-                        }
-                        StateWrapper::InProgress(StateMachine(InProgressDownloadState { files }))
-                    }
                     Ok(state) => state,
                     Err(e) => StateWrapper::from(e),
                 };
@@ -385,7 +364,11 @@ impl Application<Authenticated> {
     }
 }
 
+pub type ContextThreadSafe = Arc<RwLock<Context>>;
+
 pub struct Context {
+    pub config: Config,
+    pub downloader: Downloader,
     pub client: Client,
     pub session: Arc<SqliteSession>,
 }
@@ -393,7 +376,7 @@ pub struct Context {
 const SESSION_FILE: &str = "telomere.session";
 
 impl Context {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(config: Config) -> Result<Self> {
         let api_id_path = env::var("TG_ID_FILE")?
             .parse::<PathBuf>()
             .expect("TG_ID invalid");
@@ -416,8 +399,14 @@ impl Context {
         let SenderPool { runner, handle, .. } = SenderPool::new(Arc::clone(&session), api_id);
         let client = Client::new(handle);
         let _ = tokio::spawn(runner.run());
+        let downloader = Downloader::new(client.clone(), config.limit);
 
-        Ok(Self { client, session })
+        Ok(Self {
+            client,
+            session,
+            config,
+            downloader,
+        })
     }
 
     pub async fn init_auth(&self, phone: &String) -> Result<Option<LoginToken>> {

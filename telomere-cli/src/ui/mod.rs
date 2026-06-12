@@ -3,12 +3,12 @@ mod file_selection;
 mod forum_topic;
 mod peer_selection;
 
-use crate::app::{Context, StateWrapper};
+use crate::app::{Context, ContextThreadSafe, StateWrapper};
 use anyhow::Result;
+use download::*;
 use file_selection::*;
 use forum_topic::*;
 use peer_selection::*;
-use std::sync::Arc;
 
 use ratatui::{crossterm::event::Event, prelude::*, widgets::StatefulWidget};
 
@@ -31,15 +31,16 @@ enum TickerState {
     PeerSelection(PeerSelectionTicker),
     ForumTopicSelection(ForumTopicTicker),
     FileSelection(FileSelectionTicker),
+    DownloadState(DownloadTicker),
 }
 
 pub struct TerminalTicker {
-    ctx: Arc<Context>,
+    ctx: ContextThreadSafe,
     ticker_state: TickerState,
 }
 
 impl TerminalTicker {
-    pub fn new(ctx: Arc<Context>) -> Self {
+    pub fn new(ctx: ContextThreadSafe) -> Self {
         let ctx_clone = ctx.clone();
         Self {
             ctx,
@@ -64,6 +65,10 @@ impl StatefulWidget for TerminalUserInterface {
                 let f = FileSelectionScreenUI;
                 f.render(area, buf, state);
             }
+            StateWrapper::Download(state) => {
+                let f = DownloadUI;
+                f.render(area, buf, state);
+            }
             _ => todo!(),
         }
     }
@@ -85,6 +90,10 @@ impl Controller for TerminalController {
             }
             FileSelection(state) => {
                 let controller = FileSelectionController;
+                controller.handle(event, state)?
+            }
+            Download(state) => {
+                let controller = DownloadContrller;
                 controller.handle(event, state)?
             }
             _ => {

@@ -1,4 +1,6 @@
-use crate::app::{Context, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper};
+use crate::app::{
+    Context, ContextThreadSafe, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper,
+};
 use crate::ui::{Controller, Tick};
 use anyhow::Result;
 use grammers_client::peer::Dialog;
@@ -58,10 +60,11 @@ pub struct PeerSelectionTicker {
 }
 
 impl PeerSelectionTicker {
-    pub fn new(ctx: Arc<Context>) -> Self {
+    pub fn new(ctx: ContextThreadSafe) -> Self {
         let mut join_set = JoinSet::new();
 
         join_set.spawn(async move {
+            let ctx = ctx.read().await;
             let mut dialogs = Vec::new();
             let client = &ctx.client;
             let mut stream = client.iter_dialogs();

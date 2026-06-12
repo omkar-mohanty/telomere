@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::{Error, Result};
 use grammers_client::media::Media;
 use grammers_client::message::Message;
@@ -16,11 +14,8 @@ use ratatui::{
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::app::{DownloadState, FileSelection, StateMachine, StateWrapper};
-use crate::{
-    app::Context,
-    ui::{Controller, Tick},
-};
+use crate::app::{ContextThreadSafe, DownloadState, FileSelection, StateMachine, StateWrapper};
+use crate::ui::{Controller, Tick};
 
 pub struct FileSelectionScreenUI;
 
@@ -31,13 +26,13 @@ pub struct FileSelectionTicker {
 }
 
 impl FileSelectionTicker {
-    pub fn new(ctx: Arc<Context>, peer_ref: PeerRef, forum_topics: Vec<ForumTopic>) -> Self {
-        let client = ctx.client.clone();
+    pub fn new(ctx: ContextThreadSafe, peer_ref: PeerRef, forum_topics: Vec<ForumTopic>) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(50);
         let mut total_media = 0;
         let mut added_media = 0;
 
         tokio::spawn(async move {
+            let client = ctx.read().await.client.clone();
             let mut message_iter = client.iter_messages(peer_ref);
 
             loop {

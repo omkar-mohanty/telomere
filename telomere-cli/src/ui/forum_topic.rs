@@ -8,7 +8,9 @@ use grammers_tl_types::{enums::messages::ForumTopics, functions::messages::GetFo
 use ratatui::widgets::{StatefulWidget, Widget};
 use tokio::task::JoinSet;
 
-use crate::app::{Context, FileSelection, ForumTopicSelection, StateMachine, StateWrapper};
+use crate::app::{
+    Context, ContextThreadSafe, FileSelection, ForumTopicSelection, StateMachine, StateWrapper,
+};
 use crate::ui::{Controller, Tick};
 use ratatui::{
     crossterm::event::{Event, KeyCode},
@@ -71,10 +73,11 @@ pub struct ForumTopicTicker {
 }
 
 impl ForumTopicTicker {
-    pub fn new(ctx: Arc<Context>, peer: PeerRef) -> Self {
+    pub fn new(ctx: ContextThreadSafe, peer: PeerRef) -> Self {
         let mut join_set = JoinSet::new();
 
         join_set.spawn(async move {
+            let ctx = ctx.read().await;
             let res = get_forum_topics(&ctx.client, &peer).await?;
             Ok::<Vec<ForumTopic>, Error>(res)
         });

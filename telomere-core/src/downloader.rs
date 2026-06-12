@@ -16,7 +16,7 @@ use tokio::task::JoinSet;
 
 pub struct DownloadTask {
     pub media: Media,
-    pub retries: Option<usize>,
+    pub retries: usize,
     pub filename: String,
     pub filepath: PathBuf,
 }
@@ -36,7 +36,7 @@ impl Downloader {
         }
     }
 
-    pub async fn enqueue_task(&mut self, task: DownloadTask) -> UnboundedReceiver<DownloadEvent> {
+    pub fn enqueue_task(&mut self, task: DownloadTask) -> UnboundedReceiver<DownloadEvent> {
         let (tx, rx) = unbounded_channel();
         let client = self.client.clone();
         let permit = self.semaphore.clone();
@@ -72,20 +72,18 @@ impl DownloadTask {
             .truncate(true)
             .open(&self.filepath)
             .await?;
-        let mut total_downloaded = 0;
 
         loop {
             match stream.next().await {
                 Ok(Some(chunk)) => {
                     file.write_all(&chunk).await?;
                     file.flush().await?;
-                    total_downloaded += chunk.len();
-                    tx.send(DownloadEvent::Progress {
-                        total_size,
-                        total_downloaded,
-                    })?;
+                    tx.send(DownloadEvent::Progress(chunk.len()))?;
                 }
-                Ok(None) => return Ok(()),
+                Ok(None) => {
+                    tx.send(DownloadEvent::Finished)?;
+                    return Ok(());
+                }
                 Err(e) => match &e {
                     Rpc(rpc_error) => match rpc_error {
                         RpcError {
@@ -97,9 +95,7 @@ impl DownloadTask {
                             code: 400, value, ..
                         } => {
                             log::error!("RPC Error File Ref Expired : {:?}", value);
-                            if let Some(retries) = self.retries
-                                && total_retries < retries
-                            {
+                            if total_retries < self.retries {
                                 total_retries += 1;
                                 log::info!(
                                     "Retrying Download for : {:?} Attempt : {}",
@@ -132,9 +128,6 @@ impl<E: std::error::Error + Send + Sync + 'static> From<E> for DownloadEvent {
 
 pub enum DownloadEvent {
     Finished,
-    Progress {
-        total_size: usize,
-        total_downloaded: usize,
-    },
+    Progress(usize),
     Error(Error),
 }
