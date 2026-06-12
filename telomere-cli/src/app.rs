@@ -280,21 +280,6 @@ pub struct DownloadState {
     pub queued_downloads: HashMap<i32, FileEntry>,
 }
 
-pub struct Authenticated {
-    ctx: Arc<RwLock<Context>>,
-    state: StateWrapper,
-}
-
-impl Authenticated {
-    async fn new(config: Config) -> Result<Self> {
-        let ctx = Arc::new(RwLock::new(Context::new(config).await?));
-        Ok(Self {
-            ctx,
-            state: StateWrapper::default(),
-        })
-    }
-}
-
 pub struct Config {
     pub output: PathBuf,
     pub limit: usize,
@@ -314,36 +299,17 @@ impl Default for Config {
     }
 }
 
-pub struct Application<S>(S);
-
-impl<S> AsRef<S> for Application<S> {
-    fn as_ref(&self) -> &S {
-        &self.0
-    }
+pub struct Application {
+    ctx: Arc<RwLock<Context>>,
+    state: StateWrapper,
 }
 
-impl<S> AsMut<S> for Application<S> {
-    fn as_mut(&mut self) -> &mut S {
-        &mut self.0
-    }
-}
-
-impl<S> Deref for Application<S> {
-    type Target = S;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<S> DerefMut for Application<S> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Application<Authenticated> {
+impl Application {
     pub async fn new(config: Config) -> Result<Self> {
-        Ok(Self(Authenticated::new(config).await?))
+        let ctx = Arc::new(RwLock::new(Context::new(config).await?));
+        let state = StateWrapper::default();
+
+        Ok(Self { ctx, state })
     }
 
     pub async fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> Result<bool>
