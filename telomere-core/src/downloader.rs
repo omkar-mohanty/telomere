@@ -3,6 +3,7 @@ use anyhow::{Error, Result};
 use grammers_client::media::{Downloadable, Media};
 use grammers_client::sender::RpcError;
 use grammers_client::{Client, InvocationError};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
@@ -12,11 +13,12 @@ use tokio::sync::{
     Semaphore,
     mpsc::{UnboundedReceiver, UnboundedSender},
 };
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 
 pub struct DownloadTask {
     pub media: Media,
     pub retries: usize,
+    pub id: i32,
     pub filename: String,
     pub filepath: PathBuf,
 }
@@ -24,7 +26,7 @@ pub struct DownloadTask {
 pub struct Downloader {
     client: Client,
     semaphore: Arc<Semaphore>,
-    tasks: JoinSet<Result<()>>,
+    tasks: HashMap<i32, JoinHandle<Result<()>>>,
 }
 
 impl Downloader {
@@ -32,7 +34,7 @@ impl Downloader {
         Self {
             client,
             semaphore: Arc::new(Semaphore::new(limit)),
-            tasks: JoinSet::new(),
+            tasks: HashMap::new(),
         }
     }
 
@@ -40,17 +42,18 @@ impl Downloader {
         let (tx, rx) = unbounded_channel();
         let client = self.client.clone();
         let permit = self.semaphore.clone();
-        self.tasks.spawn(async move {
+        let id = task.id;
+        let handle = tokio::spawn(async move {
             let _permit = permit.acquire().await?;
             task.download_media(client, tx).await?;
             Ok::<(), Error>(())
         });
+        self.tasks.insert(id, handle);
         rx
     }
 
-    pub async fn finish_all_tasks(&mut self) -> Vec<Result<()>> {
-        let tasks = std::mem::take(&mut self.tasks);
-        tasks.join_all().await
+    pub fn tasks(&mut self) -> &mut HashMap<i32, JoinHandle<Result<()>>> {
+        &mut self.tasks
     }
 }
 
@@ -59,14 +62,14 @@ impl DownloadTask {
         self,
         client: Client,
         tx: UnboundedSender<DownloadEvent>,
-    ) -> Result<()> {
+    ) -> Result<i32> {
         use InvocationError::*;
         let mut total_retries = 0;
 
         let mut stream = client.iter_download(&self.media);
 
         let mut file = OpenOptions::new()
-            .create_new(true)
+            .create(true)
             .write(true)
             .truncate(true)
             .open(&self.filepath)
@@ -79,12 +82,11 @@ impl DownloadTask {
                 Ok(Some(chunk)) => {
                     file.write_all(&chunk).await?;
                     file.flush().await?;
-                    log::info!("Chunk Written {} : {}", self.filename, chunk.len());
                     tx.send(DownloadEvent::Progress(chunk.len()))?;
                 }
                 Ok(None) => {
                     tx.send(DownloadEvent::Finished)?;
-                    return Ok(());
+                    return Ok(self.id);
                 }
                 Err(e) => match &e {
                     Rpc(rpc_error) => match rpc_error {
@@ -109,12 +111,12 @@ impl DownloadTask {
                         }
                         _ => {
                             tx.send(e.into())?;
-                            return Ok(());
+                            return Ok(self.id);
                         }
                     },
                     _ => {
                         tx.send(e.into())?;
-                        return Ok(());
+                        return Ok(self.id);
                     }
                 },
             }

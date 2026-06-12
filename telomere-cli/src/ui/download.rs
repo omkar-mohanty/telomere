@@ -206,6 +206,7 @@ impl Tick for DownloadTicker {
                     let filepath = ctx.config.output.join(&filename);
 
                     let rx = ctx.downloader.enqueue_task(DownloadTask {
+                        id,
                         media,
                         filename: filename.clone(),
                         retries,
@@ -237,9 +238,13 @@ impl Tick for DownloadTicker {
                 Ok(DownloadEvent::Finished) => {
                     file_entry.file_status = FileStatus::Finished;
                 }
-                Err(e) => {
-                    file_entry.file_status = FileStatus::Error(e.into());
+                Err(TryRecvError::Disconnected) => {
+                    if let FileStatus::InProgress = file_entry.file_status {
+                        file_entry.file_status =
+                            FileStatus::Error(anyhow::Error::msg("Channel is disconnected"));
+                    }
                 }
+                Err(TryRecvError::Empty) => {}
             }
         }
 

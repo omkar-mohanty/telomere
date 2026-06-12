@@ -1,3 +1,4 @@
+mod auth;
 mod download;
 mod error_screen;
 mod file_selection;
@@ -7,6 +8,7 @@ mod peer_selection;
 use crate::app::{ContextThreadSafe, StateWrapper};
 use anyhow::Result;
 use download::*;
+use error_screen::*;
 use file_selection::*;
 use forum_topic::*;
 use peer_selection::*;
@@ -70,7 +72,10 @@ impl StatefulWidget for TerminalUserInterface {
                 let f = DownloadUI;
                 f.render(area, buf, state);
             }
-            _ => todo!(),
+            StateWrapper::Error(state) => {
+                let f = ErrorUI;
+                f.render(area, buf, state);
+            }
         }
     }
 }
@@ -97,8 +102,9 @@ impl Controller for TerminalController {
                 let controller = DownloadContrller;
                 controller.handle(event, state)?
             }
-            _ => {
-                todo!()
+            Error(state) => {
+                let controller = ErrorController;
+                controller.handle(event, state)?
             }
         };
 
@@ -159,9 +165,6 @@ impl Tick for TerminalTicker {
                 }
             },
             Error(_) => Ok(()),
-            _ => {
-                todo!()
-            }
         }
     }
 }

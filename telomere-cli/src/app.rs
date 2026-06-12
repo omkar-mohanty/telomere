@@ -2,7 +2,7 @@ use anyhow::{Error, Result};
 use directories::{ProjectDirs, UserDirs};
 use grammers_client::Client;
 use grammers_client::client::LoginToken;
-use grammers_client::media::{Downloadable, Media};
+use grammers_client::media::Media;
 use grammers_client::message::Message;
 use grammers_client::peer::Dialog;
 use grammers_mtsender::SenderPool;
@@ -163,6 +163,12 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
 impl From<Error> for StateWrapper {
     fn from(value: Error) -> Self {
         StateWrapper::Error(StateMachine(value))
+    }
+}
+
+impl From<StateMachine<Error>> for StateWrapper {
+    fn from(value: StateMachine<Error>) -> Self {
+        StateWrapper::Error(value)
     }
 }
 
