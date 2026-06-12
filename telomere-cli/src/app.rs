@@ -128,10 +128,17 @@ impl TryFrom<StateMachine<FileSelection>> for StateMachine<DownloadState> {
             .map(|msg| (msg.id(), msg))
             .map(|(id, message)| (id, message.media().unwrap()))
             .map(|(id, media)| {
-                let size = media.size().unwrap_or(100);
-                let filename = match &media {
-                    Media::Photo(p) => format!("photo_{}.jpg", p.id()),
-                    Media::Document(doc) => doc.name().unwrap_or("unknown_file").to_owned(),
+                let (filename, size) = match &media {
+                    Media::Photo(p) => {
+                        let name = format!("photo_{}.jpg", p.id());
+                        let size = p.size().unwrap_or(100);
+                        (name, size)
+                    }
+                    Media::Document(doc) => {
+                        let name = doc.name().unwrap_or("unknown_file").to_owned();
+                        let size = doc.size().unwrap_or(100);
+                        (name, size)
+                    }
                     _ => panic!("Unsupported File Type"),
                 };
 

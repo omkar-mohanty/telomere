@@ -61,7 +61,6 @@ impl DownloadTask {
         tx: UnboundedSender<DownloadEvent>,
     ) -> Result<()> {
         use InvocationError::*;
-        let total_size = self.media.size().unwrap_or(100);
         let mut total_retries = 0;
 
         let mut stream = client.iter_download(&self.media);
@@ -73,11 +72,14 @@ impl DownloadTask {
             .open(&self.filepath)
             .await?;
 
+        log::info!("Initializing Download for : {}", self.filename);
+
         loop {
             match stream.next().await {
                 Ok(Some(chunk)) => {
                     file.write_all(&chunk).await?;
                     file.flush().await?;
+                    log::info!("Chunk Written {} : {}", self.filename, chunk.len());
                     tx.send(DownloadEvent::Progress(chunk.len()))?;
                 }
                 Ok(None) => {
