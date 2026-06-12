@@ -33,7 +33,7 @@ pub enum AppMode {
 #[command(about = "Telegram CLI & TUI Media Downloader", long_about = None)]
 struct Cli {
     #[arg(short, long)]
-    output: Option<PathBuf>,
+    output: PathBuf,
 }
 
 #[tokio::main]
@@ -46,14 +46,12 @@ async fn main() -> Result<()> {
 
     log::set_max_level(LevelFilter::Info);
 
-    log::info!("Telomere media downloader initializing natively inside systemd!");
+    log::info!("Telomere media downloader initializing");
 
     let cli = Cli::parse();
     let mut config = Config::default();
 
-    if let Some(path) = cli.output {
-        config.output = path;
-    }
+    config.output = cli.output;
 
     let app = Application::new(config).await?;
     // setup terminal

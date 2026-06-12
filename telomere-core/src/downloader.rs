@@ -1,6 +1,6 @@
 use anyhow::{Error, Result};
 
-use grammers_client::media::{Downloadable, Media};
+use grammers_client::media::Media;
 use grammers_client::sender::RpcError;
 use grammers_client::{Client, InvocationError};
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{UnboundedReceiver, UnboundedSender},
 };
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 
 pub struct DownloadTask {
     pub media: Media,

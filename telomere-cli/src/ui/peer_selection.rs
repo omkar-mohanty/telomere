@@ -1,10 +1,9 @@
 use crate::app::{
-    Context, ContextThreadSafe, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper,
+    ContextThreadSafe, ForumTopicSelection, PeerSelection, StateMachine, StateWrapper,
 };
 use crate::ui::{Controller, Tick};
 use anyhow::Result;
 use grammers_client::peer::Dialog;
-use std::sync::Arc;
 
 use ratatui::{
     crossterm::event::{Event, KeyCode},

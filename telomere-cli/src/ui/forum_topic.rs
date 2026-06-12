@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::{Error, Result};
 use grammers_client::Client;
 use grammers_session::types::PeerRef;
@@ -9,7 +7,7 @@ use ratatui::widgets::{StatefulWidget, Widget};
 use tokio::task::JoinSet;
 
 use crate::app::{
-    Context, ContextThreadSafe, FileSelection, ForumTopicSelection, StateMachine, StateWrapper,
+    ContextThreadSafe, FileSelection, ForumTopicSelection, StateMachine, StateWrapper,
 };
 use crate::ui::{Controller, Tick};
 use ratatui::{

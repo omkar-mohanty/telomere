@@ -8,8 +8,8 @@ use ratatui::widgets::StatefulWidget;
 use ratatui::{
     crossterm::event::{Event, KeyCode},
     prelude::*,
-    style::{Color, Modifier, Style, Stylize},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, Paragraph},
 };
 use telomere_core::downloader::{DownloadEvent, DownloadTask};
 use tokio::sync::mpsc::error::TryRecvError;
@@ -81,7 +81,7 @@ impl StatefulWidget for DownloadUI {
 
         // Split the list inner area into vertical rows for each download entry
         // Each download entry will get 3 rows: 1 for filename/status, 1 for the Gauge, 1 for spacer
-        let mut download_items_layout = Layout::vertical(
+        let download_items_layout = Layout::vertical(
             std::iter::repeat(Constraint::Length(3))
                 .take(state.queued_downloads.len())
                 .collect::<Vec<_>>(),
@@ -90,7 +90,7 @@ impl StatefulWidget for DownloadUI {
         // Ensure we don't crash if the constraints exceed area, clamp it using ratatui constraints
         let rows = download_items_layout.split(list_inner_area);
 
-        for (idx, (id, file_entry)) in state.queued_downloads.iter().enumerate() {
+        for (idx, (_id, file_entry)) in state.queued_downloads.iter().enumerate() {
             if idx >= rows.len() {
                 break; // Screen is full, stop rendering further items
             }

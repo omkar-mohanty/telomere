@@ -1,6 +1,6 @@
 use crate::{
     app::{StateMachine, StateWrapper},
-    ui::{Controller, Tick},
+    ui::Controller,
 };
 use anyhow::Error;
 use ratatui::{
