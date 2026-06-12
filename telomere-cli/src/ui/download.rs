@@ -17,6 +17,13 @@ pub struct DownloadUI;
 pub struct DownloadTicker {
     ctx: ContextThreadSafe,
 }
+
+impl DownloadTicker {
+    pub fn new(ctx: ContextThreadSafe) -> Self {
+        Self { ctx }
+    }
+}
+
 pub struct DownloadContrller;
 
 impl StatefulWidget for DownloadUI {
@@ -100,9 +107,9 @@ impl StatefulWidget for DownloadUI {
 
             // Determine status text details and styling colors
             let (status_str, status_color) = match &file_entry.file_status {
-                FileStatus::Finished => ("FINISHED", Color::Green),
-                FileStatus::Error(e) => ("ERROR", Color::Red),
-                _ => ("DOWNLOADING", Color::Blue), // Assuming default/running variants
+                FileStatus::Finished => ("FINISHED".to_string(), Color::Green),
+                FileStatus::Error(e) => (format!("ERROR: {}", e), Color::Red),
+                _ => ("DOWNLOADING".to_string(), Color::Blue), // Assuming default/running variants
             };
 
             // Build item metadata label
@@ -222,6 +229,7 @@ impl Tick for DownloadTicker {
             match file_entry.rx.try_recv() {
                 Ok(DownloadEvent::Progress(chunk)) => {
                     file_entry.total_downloaded += chunk;
+                    file_entry.file_status = FileStatus::InProgress;
                 }
                 Ok(DownloadEvent::Error(e)) => {
                     file_entry.file_status = FileStatus::Error(e);
@@ -229,8 +237,9 @@ impl Tick for DownloadTicker {
                 Ok(DownloadEvent::Finished) => {
                     file_entry.file_status = FileStatus::Finished;
                 }
-                Err(TryRecvError::Empty) => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    file_entry.file_status = FileStatus::Error(e.into());
+                }
             }
         }
 

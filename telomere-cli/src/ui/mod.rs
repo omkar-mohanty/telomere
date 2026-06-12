@@ -1,9 +1,10 @@
 mod download;
+mod error_screen;
 mod file_selection;
 mod forum_topic;
 mod peer_selection;
 
-use crate::app::{Context, ContextThreadSafe, StateWrapper};
+use crate::app::{ContextThreadSafe, StateWrapper};
 use anyhow::Result;
 use download::*;
 use file_selection::*;
@@ -148,6 +149,16 @@ impl Tick for TerminalTicker {
                     res
                 }
             },
+            Download(state) => match &mut self.ticker_state {
+                TickerState::DownloadState(download_ticker) => download_ticker.tick(state).await,
+                _ => {
+                    let mut ticker = DownloadTicker::new(self.ctx.clone());
+                    let res = ticker.tick(state).await;
+                    self.ticker_state = TickerState::DownloadState(ticker);
+                    res
+                }
+            },
+            Error(_) => Ok(()),
             _ => {
                 todo!()
             }
