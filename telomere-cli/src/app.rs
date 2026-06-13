@@ -224,6 +224,10 @@ impl Default for StateWrapper {
     }
 }
 
+pub struct PhoneNumberAuthentication {
+    pub number: String,
+}
+
 #[derive(Debug)]
 pub struct DownloadableFile {
     pub media: Media,
